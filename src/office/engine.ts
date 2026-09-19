@@ -1,0 +1,6 @@
+export type Point={x:number,y:number};export type Waypoint=Point&{id:string;connections:string[]};
+export const waypoints:Waypoint[]=[
+{id:'door',x:67.5,y:48.9,connections:['d2','d3']},{id:'d2',x:64,y:46.6,connections:['door','water']},{id:'d3',x:69.9,y:50.8,connections:['door','coffee','deskC']},{id:'water',x:53.3,y:46.6,connections:['d2','deskB']},{id:'coffee',x:73.5,y:56.7,connections:['d3','deskC']},{id:'deskA',x:25.8,y:71,connections:['mid','deskB']},{id:'deskB',x:48.9,y:52.9,connections:['water','mid','deskC']},{id:'deskC',x:65.9,y:75.8,connections:['d3','deskB']},{id:'mid',x:38.5,y:55.2,connections:['deskA','deskB']}];
+const nearest=(p:Point)=>waypoints.reduce((a,b)=>(a.x-p.x)**2+(a.y-p.y)**2<(b.x-p.x)**2+(b.y-p.y)**2?a:b);
+export function path(from:Point,to:Point):Point[]{const s=nearest(from),e=nearest(to),q:[[string,string[]]]|any=[[s.id,[s.id]]],seen=new Set([s.id]),by=new Map(waypoints.map(w=>[w.id,w]));while(q.length){const[id,ids]=q.shift();if(id===e.id)return ids.slice(1).map((x:string)=>{const w=by.get(x)!;return{x:w.x,y:w.y}}).concat([to]);for(const n of by.get(id)?.connections??[])if(!seen.has(n)){seen.add(n);q.push([n,[...ids,n]])}}return[to]}
+export function step(p:Point,t:Point,s=.34){const dx=t.x-p.x,dy=t.y-p.y,d=Math.hypot(dx,dy);return d<=s?{p:t,arrived:true}:{p:{x:p.x+dx/d*s,y:p.y+dy/d*s},arrived:false}}
