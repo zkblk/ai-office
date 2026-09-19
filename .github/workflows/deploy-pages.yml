@@ -1,19 +1,15 @@
-name: Deploy AI Office to GitHub Pages
-
+name: Deploy pristine Pixel Agents baseline
 on:
   push:
     branches: ["main"]
   workflow_dispatch:
-
 permissions:
   contents: read
   pages: write
   id-token: write
-
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
-
 jobs:
   deploy:
     environment:
@@ -21,22 +17,22 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact Pixel Agents fork
         uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
+        with:
+          repository: zkblk/pixel-agents
+          ref: main
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install
-        run: npm install
-      - name: Build
-        run: npm run build -- --base=/ai-office/
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Adapt absolute runtime assets for GitHub Pages subpath
+        run: |
+          find src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" \) -print0 | xargs -0 sed -i "s#'/sprites/#'/ai-office/sprites/#g; s#'/rooms/#'/ai-office/rooms/#g; s#'/sounds/#'/ai-office/sounds/#g; s#url('/#url('/ai-office/#g"
+      - run: npm install
+      - run: npm run build -- --base=/ai-office/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
-      - name: Deploy
-        id: deployment
+      - id: deployment
         uses: actions/deploy-pages@v4
