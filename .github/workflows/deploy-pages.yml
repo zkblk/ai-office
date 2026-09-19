@@ -28,7 +28,6 @@ jobs:
       - name: Adapt absolute runtime assets for GitHub Pages subpath
         run: |
           find src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" \) -print0 | xargs -0 sed -i "s#'/sprites/#'/ai-office/sprites/#g; s#'/rooms/#'/ai-office/rooms/#g; s#'/sounds/#'/ai-office/sounds/#g; s#url('/#url('/ai-office/#g"
-          sed -i "s/const isSimMode = params.has('sim') || params.has('video')/const isSimMode = true/" src/App.tsx
       - run: npm install
       - run: npm run build -- --base=/ai-office/
       - uses: actions/configure-pages@v5
