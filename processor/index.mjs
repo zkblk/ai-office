@@ -4,7 +4,7 @@
 // Runs in GitHub Actions (.github/workflows/idea-inbox.yml). The repo is public, so logs carry page ids only — never URLs or content.
 // Usage: node processor/index.mjs            process the queue
 //        node processor/index.mjs --count    print number of pending rows
-import{execFile}from'node:child_process';import{promisify}from'node:util';import{mkdtemp,readdir,rm,writeFile}from'node:fs/promises';import{tmpdir}from'node:os';import{join}from'node:path';
+import{execFile}from'node:child_process';import{promisify}from'node:util';import{mkdtemp,readdir,rm,stat,writeFile}from'node:fs/promises';import{tmpdir}from'node:os';import{join}from'node:path';
 const run=promisify(execFile),env=process.env;
 const cfg={token:env.NOTION_TOKEN,ds:env.NOTION_DATA_SOURCE_ID,cobalt:(env.COBALT_URL||'').replace(/\/$/,''),parakeet:env.PARAKEET_CLI||'parakeet-cli',model:env.PARAKEET_MODEL,
   ollama:(env.OLLAMA_URL||'http://localhost:11434').replace(/\/$/,''),llm:env.LLM_MODEL||'qwen2.5:7b',lang:env.SUMMARY_LANGUAGE||'the same language as the content',
@@ -50,8 +50,8 @@ async function media(url,dir){const errors=[];for(const[name,fn]of[['cobalt',via
 // ---------- Transcript + digest ----------
 async function transcribe(file,dir){const wav=join(dir,'audio.wav');
   // Videos without an audio track (or photo posts) make ffmpeg fail — treat as "no speech", not as an error.
-  try{await run('ffmpeg',['-y','-v','error','-i',file,'-vn','-ar','16000','-ac','1','-c:a','pcm_s16le',wav],{timeout:10*60000})}catch{return''}
-  const{stdout}=await run(cfg.parakeet,['transcribe','--model',cfg.model,'--input',wav],{timeout:60*60000,maxBuffer:64<<20});return stdout.trim()}
+  try{await run('ffmpeg',['-y','-v','error','-i',file,'-vn','-ar','16000','-ac','1','-c:a','pcm_s16le',wav],{timeout:10*60000})}catch{log('no audio track');return''}
+  log('audio',Math.round((await stat(wav)).size/32000),'s');const{stdout}=await run(cfg.parakeet,['transcribe','--model',cfg.model,'--input',wav],{timeout:60*60000,maxBuffer:64<<20});return stdout.trim()}
 async function digest(input){const prompt=`You file saved social posts, videos and articles into a personal knowledge base.
 Transcripts are machine-generated: product and brand names may be spelled phonetically — write them correctly.
 Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 sentences on what it says, "why_useful": 1-2 sentences on why it could be useful later,
