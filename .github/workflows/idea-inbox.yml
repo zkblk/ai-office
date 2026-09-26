@@ -27,7 +27,9 @@ jobs:
         with: { node-version: 22 }
       - name: Check queue
         id: queue
-        run: echo "pending=$(node processor/index.mjs --count)" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -z "$NOTION_TOKEN" ]; then echo "::warning::NOTION_TOKEN secret is not set — skipping"; echo "pending=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "pending=$(node processor/index.mjs --count)" >> "$GITHUB_OUTPUT"
 
       - name: Cache parakeet
         if: steps.queue.outputs.pending != '0'
