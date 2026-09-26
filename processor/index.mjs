@@ -45,13 +45,14 @@ async function viaCobalt(url,dir){if(!cfg.cobalt)throw new Error('not configured
   const media=d.status==='tunnel'||d.status==='redirect'?d.url:d.status==='picker'?(d.audio||d.picker?.find(p=>p.type==='video')?.url):d.status==='local-processing'?(d.audio||d.tunnel?.[0]):null;
   if(!media)throw new Error(d.error?.code||d.status||'http '+r.status);return download(media,join(dir,'cobalt.media'))}
 async function viaYtDlp(url,dir){await run('yt-dlp',['-f','bestaudio/best',...ytArgs(),'-o',join(dir,'ytdlp.%(ext)s'),url],{timeout:10*60000});const f=(await readdir(dir)).find(n=>n.startsWith('ytdlp.'));if(!f)throw new Error('no file');return join(dir,f)}
-async function media(url,dir){const errors=[];for(const[name,fn]of[['cobalt',viaCobalt],['yt-dlp',viaYtDlp]]){try{return{file:await fn(url,dir),via:name}}catch(e){errors.push(`${name}: ${(e.stderr||'').split('\n').find(l=>l.startsWith('ERROR'))||e.message.split('\n')[0]}`)}}return{errors}}
+// First extractor whose file ffmpeg can turn into 16 kHz mono WAV wins; a bad or silent-less file falls through to the next one.
+async function media(url,dir){const errors=[],wav=join(dir,'audio.wav');for(const[name,fn]of[['cobalt',viaCobalt],['yt-dlp',viaYtDlp]]){try{const file=await fn(url,dir);
+  try{await run('ffmpeg',['-y','-v','error','-i',file,'-vn','-ar','16000','-ac','1','-c:a','pcm_s16le',wav],{timeout:10*60000})}catch(e){throw new Error(`no usable audio (${(await stat(file)).size} bytes): ${(e.stderr||e.message).trim().split('\n')[0]}`)}
+  log('audio via',name,Math.round((await stat(wav)).size/32000),'s');return{wav,via:name}}
+  catch(e){const why=(e.stderr||'').split('\n').find(l=>l.startsWith('ERROR'))||e.message.split('\n')[0];errors.push(`${name}: ${why}`);log(name,'failed:',why.replace(/https?:\/\/\S+/g,'<url>').slice(0,160))}}return{errors}}
 
 // ---------- Transcript + digest ----------
-async function transcribe(file,dir){const wav=join(dir,'audio.wav');
-  // Videos without an audio track (or photo posts) make ffmpeg fail — treat as "no speech", not as an error.
-  try{await run('ffmpeg',['-y','-v','error','-i',file,'-vn','-ar','16000','-ac','1','-c:a','pcm_s16le',wav],{timeout:10*60000})}catch{log('no audio track');return''}
-  log('audio',Math.round((await stat(wav)).size/32000),'s');const{stdout}=await run(cfg.parakeet,['transcribe','--model',cfg.model,'--input',wav],{timeout:60*60000,maxBuffer:64<<20});return stdout.trim()}
+async function transcribe(wav){const{stdout}=await run(cfg.parakeet,['transcribe','--model',cfg.model,'--input',wav],{timeout:60*60000,maxBuffer:64<<20});return stdout.trim()}
 async function digest(input){const prompt=`You file saved social posts, videos and articles into a personal knowledge base.
 Transcripts are machine-generated: product and brand names may be spelled phonetically — write them correctly.
 Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 sentences on what it says, "why_useful": 1-2 sentences on why it could be useful later,
@@ -66,14 +67,14 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   await update(id,{Status:{select:{name:'Processing'}},Attempts:{number:attempts},Error:{rich_text:[]}});
   const dir=await mkdtemp(join(tmpdir(),'idea-inbox-'));try{if(!url)throw new Error('No URL on this page. Share a link or put it in the URL property.');
   const src=source(url),[meta,page2,m]=await Promise.all([metadata(url),pageText(url),media(url,dir)]);
-  const transcript=m.file?await transcribe(m.file,dir):'';const caption=meta.caption||page2.caption||'';const article=!transcript&&src==='Web'?page2.article||'':'';
+  const transcript=m.wav?await transcribe(m.wav):'';const caption=meta.caption||page2.caption||'';const article=!transcript&&src==='Web'?page2.article||'':'';
   if(!transcript&&!caption&&!article)throw new Error('Nothing extracted. '+(m.errors||[]).join('; '));
   const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,transcript&&`Transcript:\n${transcript}`,article&&`Article:\n${article}`].filter(Boolean).join('\n\n');
   const d=await digest(input);const links=[...new Set([...(d.links||[]),...(caption.match(/https?:\/\/\S+/g)||[])])];
   await update(id,{Name:{title:text(d.title||meta.title||page2.title||title||url)},URL:{url},Status:{select:{name:'Done'}},Source:{select:{name:src}},Category:{select:{name:d.category}},
     Author:{rich_text:text(meta.author||page2.author||'')},...(meta.published?{Published:{date:{start:meta.published}}}:{}),Summary:{rich_text:text(d.summary)},'Why useful':{rich_text:text(d.why_useful)},
-    Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools)},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))}});
-  await writeBody(id,botId,[['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.file?'No speech detected.':'')],['Article text',article]]);
+    Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools)},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(m.wav?'':'Text only, no audio. '+(m.errors||[]).join('; '))}});
+  await writeBody(id,botId,[['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Article text',article]]);
   log(id,'done',m.via||'text-only',transcript.length,'chars')}
   catch(e){const retry=attempts<cfg.maxAttempts;await update(id,{Status:{select:{name:retry?'New':'Error'}},Error:{rich_text:text(String(e.message).slice(0,1900))}}).catch(()=>{});log(id,retry?'failed, will retry':'failed')}
   finally{await rm(dir,{recursive:true,force:true})}}
