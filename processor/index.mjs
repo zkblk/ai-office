@@ -64,7 +64,7 @@ async function transcribe(wav){const{stdout}=await run(cfg.parakeet,['transcribe
 async function digest(input){const prompt=`You file saved social posts, videos and articles into a personal knowledge base.
 Transcripts are machine-generated: product and brand names may be spelled phonetically — write them correctly.
 Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 sentences on what it says, "why_useful": 1-2 sentences on why it could be useful later,
-"category": one of ${JSON.stringify(CATEGORIES)}, "tags": 3-6 lowercase topic tags, "tools": products/tools/services/companies mentioned, "people": people mentioned, "links": URLs or domains mentioned}.
+"category": one of ${JSON.stringify(CATEGORIES)}, "tags": 3-6 lowercase topic tags, "tools": names of specific products, apps, services or companies (proper nouns only — never activities, techniques or generic categories like "video editing"), "people": people mentioned, "links": URLs or domains mentioned}.
 Write title, summary and why_useful in ${cfg.lang}. Use [] when nothing fits. Do not invent facts.`;
   // Streamed: on CPU the prompt can take minutes, and a non-streamed call trips Node's 300 s headers timeout. Input capped so one item stays ~1–2 min.
   const r=await fetch(cfg.ollama+'/api/chat',{method:'POST',body:JSON.stringify({model:cfg.llm,stream:true,format:'json',options:{temperature:0.2,num_ctx:8192},messages:[{role:'system',content:prompt},{role:'user',content:input.slice(0,12000)}]}),signal:AbortSignal.timeout(20*60000)});
