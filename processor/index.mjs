@@ -58,8 +58,9 @@ Transcripts are machine-generated: product and brand names may be spelled phonet
 Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 sentences on what it says, "why_useful": 1-2 sentences on why it could be useful later,
 "category": one of ${JSON.stringify(CATEGORIES)}, "tags": 3-6 lowercase topic tags, "tools": products/tools/services/companies mentioned, "people": people mentioned, "links": URLs or domains mentioned}.
 Write title, summary and why_useful in ${cfg.lang}. Use [] when nothing fits. Do not invent facts.`;
-  const r=await fetch(cfg.ollama+'/api/chat',{method:'POST',body:JSON.stringify({model:cfg.llm,stream:false,format:'json',options:{temperature:0.2,num_ctx:16384},messages:[{role:'system',content:prompt},{role:'user',content:input.slice(0,40000)}]}),signal:AbortSignal.timeout(20*60000)});
-  if(!r.ok)throw new Error('ollama '+r.status);const j=JSON.parse((await r.json()).message?.content||'{}');return{...j,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
+  // Streamed: on CPU the prompt can take minutes, and a non-streamed call trips Node's 300 s headers timeout. Input capped so one item stays ~1–2 min.
+  const r=await fetch(cfg.ollama+'/api/chat',{method:'POST',body:JSON.stringify({model:cfg.llm,stream:true,format:'json',options:{temperature:0.2,num_ctx:8192},messages:[{role:'system',content:prompt},{role:'user',content:input.slice(0,12000)}]}),signal:AbortSignal.timeout(20*60000)});
+  if(!r.ok)throw new Error('ollama '+r.status);let out='';for(const line of(await r.text()).split('\n'))if(line.trim())out+=JSON.parse(line).message?.content||'';const j=JSON.parse(out||'{}');return{...j,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
 
 // ---------- Job ----------
 async function handle(page,botId){const p=page.properties,id=page.id,title=plain(p.Name);
