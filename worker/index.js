@@ -1,0 +1,8 @@
+const reply=(x,s=200)=>new Response(JSON.stringify(x),{status:s,headers:{"content-type":"application/json","cache-control":"no-store"}});
+const source=url=>url.includes("instagram.com")?"Instagram":url.includes("threads.net")?"Threads":url.includes("youtu")?"YouTube":"Web";
+async function speech(env,buffer){const b=new Uint8Array(buffer);let raw="";for(let i=0;i<b.length;i+=32768)raw+=String.fromCharCode(...b.subarray(i,i+32768));const out=await env.AI.run("@cf/openai/whisper-large-v3-turbo",{audio:btoa(raw),task:"transcribe",vad_filter:true});return out.text||""}
+export default{async fetch(request,env){const u=new URL(request.url);
+if(u.pathname==="/api/health")return reply({ok:true,ai:true});
+if(u.pathname==="/api/transcribe"&&request.method==="POST"){try{const f=await request.formData(),file=f.get("file");if(!(file instanceof File))return reply({error:"file required"},400);const transcript=await speech(env,await file.arrayBuffer());return reply({status:"ready",title:file.name,transcript})}catch(e){return reply({status:"error",error:String(e)},500)}}
+if(u.pathname==="/api/capture"&&request.method==="POST"){const body=await request.json(),url=String(body.url||"").trim();if(!url)return reply({error:"url required"},400);return reply({id:crypto.randomUUID(),url,source:source(url),status:"needs_extractor",message:"Saved. Server-side social media extraction is the next adapter."},202)}
+return env.ASSETS.fetch(request)}};
