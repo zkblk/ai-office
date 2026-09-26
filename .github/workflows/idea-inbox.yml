@@ -7,6 +7,8 @@ name: idea-inbox
 on:
   schedule: [{ cron: "*/15 * * * *" }]
   workflow_dispatch:
+    inputs:
+      url: { description: "Optional: add this link to the Notion queue first", required: false, default: "" }
 concurrency: { group: idea-inbox, cancel-in-progress: false }
 permissions: { contents: read }
 env:
@@ -25,6 +27,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: Add link
+        if: inputs.url != ''
+        env: { ADD_URL: "${{ inputs.url }}" }
+        run: node processor/index.mjs --add "$ADD_URL"
       - name: Check queue
         id: queue
         run: |

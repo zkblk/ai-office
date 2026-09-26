@@ -80,6 +80,8 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   finally{await rm(dir,{recursive:true,force:true})}}
 
 if(!cfg.token||!cfg.ds){console.error('NOTION_TOKEN and NOTION_DATA_SOURCE_ID are required');process.exit(1)}
+// Same request the iOS Shortcut sends (docs/ios-shortcut.md), so the Shortcut body can be tested from the workflow.
+const addUrl=process.argv[process.argv.indexOf('--add')+1];if(process.argv.includes('--add')){const p=await notion('pages','POST',{parent:{type:'data_source_id',data_source_id:cfg.ds},properties:{Name:{title:[{text:{content:addUrl}}]},URL:{url:addUrl},Status:{select:{name:'New'}}}});log('added',p.id);process.exit(0)}
 if(process.argv.includes('--count')){console.log((await pending()).length);process.exit(0)}
 if(!cfg.model){console.error('PARAKEET_MODEL is required');process.exit(1)}
 const botId=(await notion('users/me')).id,start=Date.now();let done=0;
