@@ -1,0 +1,71 @@
+# Idea Inbox processor: every 15 minutes, process new rows in the Notion database.
+# Secrets:   NOTION_TOKEN (Notion internal integration, shared with the Idea Inbox database)
+#            YTDLP_COOKIES (optional, Netscape cookies.txt), COBALT_COOKIES (optional, Cobalt cookies.json)
+# Variables: NOTION_DATA_SOURCE_ID, optional LLM_MODEL, SUMMARY_LANGUAGE, MAX_ITEMS
+# The repo is public: logs are public. Never echo URLs, transcripts or secrets here.
+name: idea-inbox
+on:
+  schedule: [{ cron: "*/15 * * * *" }]
+  workflow_dispatch:
+concurrency: { group: idea-inbox, cancel-in-progress: false }
+permissions: { contents: read }
+env:
+  NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+  NOTION_DATA_SOURCE_ID: ${{ vars.NOTION_DATA_SOURCE_ID || '4fd5ba03-9001-4bd8-ad00-b42ccc6a0f72' }}
+  LLM_MODEL: ${{ vars.LLM_MODEL || 'qwen2.5:7b' }}
+  SUMMARY_LANGUAGE: ${{ vars.SUMMARY_LANGUAGE || 'Russian' }}
+  MAX_ITEMS: ${{ vars.MAX_ITEMS || '15' }}
+  PARAKEET_VERSION: v0.5.0
+  PARAKEET_MODEL_FILE: tdt-0.6b-v3-q8_0.gguf
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Check queue
+        id: queue
+        run: echo "pending=$(node processor/index.mjs --count)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache parakeet
+        if: steps.queue.outputs.pending != '0'
+        uses: actions/cache@v4
+        with: { path: ~/parakeet, key: "parakeet-${{ env.PARAKEET_VERSION }}-${{ env.PARAKEET_MODEL_FILE }}" }
+      - name: Cache Ollama model
+        if: steps.queue.outputs.pending != '0'
+        uses: actions/cache@v4
+        with: { path: ~/.ollama/models, key: "ollama-${{ env.LLM_MODEL }}" }
+
+      - name: Install tools
+        if: steps.queue.outputs.pending != '0'
+        run: |
+          pip install --quiet --upgrade yt-dlp
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null; }
+          mkdir -p ~/parakeet
+          if [ ! -x ~/parakeet/parakeet-cli ]; then
+            curl -sSL "https://github.com/mudler/parakeet.cpp/releases/download/$PARAKEET_VERSION/parakeet-$PARAKEET_VERSION-bin-linux-cpu-x64.tar.gz" | tar xz --strip-components=1 -C ~/parakeet
+          fi
+          [ -f ~/parakeet/model.gguf ] || curl -sSL -o ~/parakeet/model.gguf "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/$PARAKEET_MODEL_FILE"
+          curl -fsSL https://ollama.com/install.sh | sh >/dev/null 2>&1
+          sudo systemctl stop ollama 2>/dev/null || true
+          OLLAMA_MODELS=~/.ollama/models nohup ollama serve >/dev/null 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:11434/api/version >/dev/null && break; sleep 1; done
+          OLLAMA_MODELS=~/.ollama/models ollama pull "$LLM_MODEL" >/dev/null 2>&1
+
+      - name: Start Cobalt
+        if: steps.queue.outputs.pending != '0'
+        env: { COBALT_COOKIES: "${{ secrets.COBALT_COOKIES }}" }
+        run: |
+          args=(-d -p 9000:9000 -e API_URL=http://localhost:9000/)
+          if [ -n "$COBALT_COOKIES" ]; then printf '%s' "$COBALT_COOKIES" > "$RUNNER_TEMP/cookies.json"; args+=(-e COOKIE_PATH=/cookies.json -v "$RUNNER_TEMP/cookies.json:/cookies.json:ro"); fi
+          docker run "${args[@]}" ghcr.io/imputnet/cobalt:11 >/dev/null
+          for i in $(seq 1 30); do curl -sf localhost:9000/ >/dev/null && break; sleep 1; done
+
+      - name: Process
+        if: steps.queue.outputs.pending != '0'
+        env: { YTDLP_COOKIES: "${{ secrets.YTDLP_COOKIES }}" }
+        run: |
+          if [ -n "$YTDLP_COOKIES" ]; then printf '%s' "$YTDLP_COOKIES" > "$RUNNER_TEMP/yt-cookies.txt"; export YTDLP_COOKIES_FILE="$RUNNER_TEMP/yt-cookies.txt"; fi
+          COBALT_URL=http://localhost:9000 PARAKEET_CLI=~/parakeet/parakeet-cli PARAKEET_MODEL=~/parakeet/model.gguf node processor/index.mjs
