@@ -46,6 +46,10 @@ jobs:
         uses: actions/cache@v4
         with: { path: ~/.ollama/models, key: "ollama-${{ env.LLM_MODEL }}" }
 
+      - name: Install Deno (yt-dlp needs a JS runtime for YouTube)
+        if: steps.queue.outputs.pending != '0'
+        uses: denoland/setup-deno@v2
+        with: { deno-version: v2.x }
       - name: Install tools
         if: steps.queue.outputs.pending != '0'
         run: |
