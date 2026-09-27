@@ -27,8 +27,6 @@ All components are open source and free; nothing is billed.
    - secret `NOTION_TOKEN`
    - optional variables: `SUMMARY_LANGUAGE` (default: Russian), `LLM_MODEL`, `MAX_ITEMS`
    - optional secrets for Instagram login walls: `YTDLP_COOKIES` (Netscape cookies.txt), `COBALT_COOKIES` (Cobalt cookies.json)
-
-YouTube is text-only (title + description, no transcript): it blocks GitHub runner IPs without login cookies.
 3. iPhone: Share → Notion → Idea Inbox.
 
 The repo is public, so workflow logs are public: the processor logs page ids only.

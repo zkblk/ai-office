@@ -79,11 +79,10 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   const url=(p.URL?.url||(/^https?:\/\//.test(title.trim())?title.trim():'')).trim();const attempts=(p.Attempts?.number||0)+1;
   await update(id,{Status:{select:{name:'Processing'}},Attempts:{number:attempts},Error:{rich_text:[]}});
   const dir=await mkdtemp(join(tmpdir(),'idea-inbox-'));try{if(!url)throw new Error('No URL on this page. Share a link or put it in the URL property.');
-  // YouTube blocks GitHub runner IPs without login cookies, so it is text-only by design: title + description from the page.
-  const src=source(url),noMedia=src==='YouTube',[meta,page2,m]=await Promise.all([noMedia?{}:metadata(url),pageText(url),noMedia?{errors:['YouTube is text-only (no cookies)']}:media(url,dir)]);
+  const src=source(url),[meta,page2,m]=await Promise.all([metadata(url),pageText(url),media(url,dir)]);
   const transcript=m.wav?await transcribe(m.wav):'';const caption=meta.caption||page2.caption||'';const article=!transcript&&src==='Web'?page2.article||'':'';
   // Posts that are not Reels (/p/ = photo, carousel or mixed) and Threads posts may carry their text on images.
-  const slideText=cfg.cobalt&&!noMedia&&(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir):'';
+  const slideText=cfg.cobalt&&(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir):'';
   if(!transcript&&!caption&&!article&&!slideText)throw new Error('Nothing extracted. '+(m.errors||[]).join('; '));
   const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,transcript&&`Transcript:\n${transcript}`,slideText&&`Text on images (OCR):\n${slideText}`,article&&`Article:\n${article}`].filter(Boolean).join('\n\n');
   const d=await digest(input);const links=[...new Set([...(d.links||[]),...(caption.match(/https?:\/\/\S+/g)||[])])];
