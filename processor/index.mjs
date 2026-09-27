@@ -55,13 +55,24 @@ async function media(url,dir){const errors=[],wav=join(dir,'audio.wav');for(cons
   log('audio via',name,Math.round((await stat(wav)).size/32000),'s');return{wav,via:name}}
   catch(e){const why=(e.stderr||'').split('\n').find(l=>l.startsWith('ERROR'))||e.message.split('\n')[0];errors.push(`${name}: ${why}`);log(name,'failed:',why.replace(/https?:\/\/\S+/g,'<url>').slice(0,160))}}return{errors}}
 
+// OCR output → lines that are mostly letters/digits (drops noise).
+const ocrLines=s=>s.split('\n').map(l=>l.trim()).filter(l=>l.length>2&&(l.match(/[\p{L}\p{N}]/gu)||[]).length/l.length>0.6);
 // Photos and carousel slides → text with Tesseract (rus+eng). Cobalt returns every slide as a "picker" item.
 async function slides(url,dir){try{const r=await fetch(cfg.cobalt+'/',{method:'POST',headers:{accept:'application/json','content-type':'application/json'},body:JSON.stringify({url,downloadMode:'auto'})});const d=await r.json();
   const urls=d.status==='picker'?d.picker.filter(p=>p.type==='photo').map(p=>p.url):(d.status==='tunnel'||d.status==='redirect')&&/\.(jpe?g|png|webp|heic)$/i.test(d.filename||'')?[d.url]:[];
   const out=[];for(const[i,u]of urls.slice(0,20).entries()){try{const img=await download(u,join(dir,`slide-${i}`));const{stdout}=await run('tesseract',[img,'stdout','-l','rus+eng'],{timeout:120000});
-    // Drop OCR noise: keep lines that are mostly letters/digits.
-    const t=stdout.split('\n').map(l=>l.trim()).filter(l=>l.length>2&&(l.match(/[\p{L}\p{N}]/gu)||[]).length/l.length>0.6).join('\n');if(t)out.push(`Slide ${i+1}:\n${t}`)}catch(e){log('slide',i+1,'failed:',e.message.split('\n')[0].slice(0,120))}}
-  log('slides',urls.length,'with text',out.length);return out.join('\n\n')}catch(e){log('slides skipped:',e.message.slice(0,120));return''}}
+    const t=ocrLines(stdout).join('\n');if(t)out.push(`Slide ${i+1}:\n${t}`)}catch(e){log('slide',i+1,'failed:',e.message.split('\n')[0].slice(0,120))}}
+  log('slides',urls.length,'with text',out.length);return{text:out.join('\n\n'),count:urls.length}}catch(e){log('slides skipped:',e.message.slice(0,120));return{text:'',count:0}}}
+
+// Reels often show their list on screen without saying it. Sample frames at scene changes (every 2 s if the video
+// has few cuts), OCR each and keep every line once, in order of appearance.
+async function screenText(url,dir){try{await run('yt-dlp',['-f','bv*[height<=1080]/b',...ytArgs(),'-o',join(dir,'video.%(ext)s'),url],{timeout:10*60000});
+  const video=(await readdir(dir)).find(n=>n.startsWith('video.'));if(!video)return'';const frames=async()=>(await readdir(dir)).filter(n=>/^(scene|tick)-/.test(n)).sort();
+  await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf',"select='eq(n\\,0)+gt(scene\\,0.2)',scale=1080:-2",'-fps_mode','vfr','-frames:v','40',join(dir,'scene-%03d.png')],{timeout:5*60000});
+  if((await frames()).length<4)await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf','fps=1/2,scale=1080:-2','-frames:v','40',join(dir,'tick-%03d.png')],{timeout:5*60000});
+  const seen=new Set(),out=[],list=await frames();for(const f of list){const{stdout}=await run('tesseract',[join(dir,f),'stdout','-l','rus+eng'],{timeout:120000}).catch(()=>({stdout:''}));
+    for(const l of ocrLines(stdout)){const k=l.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');if(k.length>2&&!seen.has(k)){seen.add(k);out.push(l)}}}
+  log('screen frames',list.length,'lines',out.length);return out.join('\n')}catch(e){log('screen text skipped:',(e.stderr||e.message).split('\n').find(l=>l.startsWith('ERROR'))?.slice(0,160)||e.message.split('\n')[0].slice(0,120));return''}}
 
 // ---------- Transcript + digest ----------
 async function transcribe(wav){const{stdout}=await run(cfg.parakeet,['transcribe','--model',cfg.model,'--input',wav],{timeout:60*60000,maxBuffer:64<<20});return stdout.trim()}
@@ -83,15 +94,24 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   const src=source(url),[meta,page2,m]=await Promise.all([metadata(url),pageText(url),media(url,dir)]);
   const transcript=m.wav?await transcribe(m.wav):'';const caption=meta.caption||page2.caption||'';const article=!transcript&&src==='Web'?page2.article||'':'';
   // Posts that are not Reels (/p/ = photo, carousel or mixed) and Threads posts may carry their text on images.
-  const slideText=cfg.cobalt&&(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir):'';
-  if(!transcript&&!caption&&!article&&!slideText)throw new Error('Nothing extracted. '+(m.errors||[]).join('; '));
-  const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,transcript&&`Transcript:\n${transcript}`,slideText&&`Text on images (OCR):\n${slideText}`,article&&`Article:\n${article}`].filter(Boolean).join('\n\n');
+  const sl=cfg.cobalt&&(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir):{text:'',count:0},slideText=sl.text;
+  // Short social videos: also read what is shown on screen (lists, tool names and URLs are often only there).
+  const isVideo=/instagram\.com\/(reels?|tv)\//.test(url)||src==='Threads'||/youtube\.com\/shorts\//.test(url);
+  const screen=isVideo?await screenText(url,dir):'';
+  if(!transcript&&!caption&&!article&&!slideText&&!screen)throw new Error('Nothing extracted. '+(m.errors||[]).join('; '));
+  // Say what is missing instead of calling a thin page "Done".
+  const gated=/\bcomment\s+["“'«]?[\w-]+["”'»]?\s+(for|to get|and)\b|коммент\S*\s+["«“]?\S+["»”]?\s+(и|чтобы|для)(?=\s)/i.test(caption);
+  const missing=[isVideo&&!m.wav&&!screen&&'Видео не скачалось, речь и текст на экране не прочитаны. '+(m.errors||[]).join('; ').replace(/https?:\/\/\S+/g,'<url>'),
+    src==='Instagram'&&!m.wav&&sl.count<=1&&`Из карусели получено слайдов: ${sl.count}. Остальные закрыты логином Instagram.`,
+    gated&&'Автор выдаёт полный список по комментарию в DM: в самом посте его может не быть.'].filter(Boolean);
+  const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,transcript&&`Transcript:\n${transcript}`,slideText&&`Text on images (OCR):\n${slideText}`,screen&&`Text on screen (OCR of video frames):\n${screen}`,article&&`Article:\n${article}`,
+    gated&&'Note: the author gives the full list only by comment/DM. Do not invent the missing items; say that the list is not in the post.'].filter(Boolean).join('\n\n');
   const d=await digest(input);const links=[...new Set([...(d.links||[]),...(caption.match(/https?:\/\/\S+/g)||[])])];
-  await update(id,{Name:{title:text(d.title||meta.title||page2.title||title||url)},URL:{url},Status:{select:{name:'Done'}},Source:{select:{name:src}},Category:{select:{name:d.category}},
+  await update(id,{Name:{title:text(d.title||meta.title||page2.title||title||url)},URL:{url},Status:{select:{name:missing.length?'Partial':'Done'}},Source:{select:{name:src}},Category:{select:{name:d.category}},
     Author:{rich_text:text(meta.author||page2.author||'')},...(meta.published?{Published:{date:{start:meta.published}}}:{}),Summary:{rich_text:text(d.summary)},'Why useful':{rich_text:text(d.why_useful)},
-    Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools)},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(m.wav||slideText?'':'Text only, no audio. '+(m.errors||[]).join('; '))}});
-  await writeBody(id,botId,[['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Article text',article]],url);
-  log(id,'done',m.via||'text-only',transcript.length,'chars')}
+    Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools)},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(missing.join('\n'))}});
+  await writeBody(id,botId,[['Не получено',missing],['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Text on screen',screen],['Article text',article]],url);
+  log(id,missing.length?'partial':'done',m.via||'text-only',transcript.length,'chars',screen.length,'screen chars')}
   catch(e){const retry=attempts<cfg.maxAttempts;await update(id,{Status:{select:{name:retry?'New':'Error'}},Error:{rich_text:text(String(e.message).slice(0,1900))}}).catch(()=>{});log(id,retry?'failed, will retry':'failed')}
   finally{await rm(dir,{recursive:true,force:true})}}
 

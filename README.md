@@ -39,6 +39,7 @@ GitHub Actions "idea-inbox"  (.github/workflows/idea-inbox.yml, processor/)
       metadata   yt-dlp -J (author, date, caption); page text for articles
       transcript parakeet.cpp, Parakeet TDT 0.6B v3 (25 langs incl. ru/uk/en), CPU
       slides     Cobalt picker → Tesseract OCR (rus+eng), up to 20 images
+      screen     short videos (Reels, Threads, Shorts): frames at scene changes → Tesseract, each line once
       digest     Ollama qwen2.5:7b → title, key points, summary, why useful,
                  category, tags, tools, people, links  (written in Russian)
    4. write back to the same Notion page, Status = Done
@@ -71,11 +72,12 @@ Each row is a page: Key points, Summary, Post text, Transcript, Slides text.
 
 ## Limits
 - Time: ~1.5 min runner setup + ~2–3 min per Reel, ~4–5 min per long article (LLM on CPU). One run at a time; ≤15 items / 45 min per run; 20 s pause between Instagram items.
+- Partial: when the page was filled but something is missing (video not downloaded, only 1 carousel slide, list gated behind "comment X"), Status = Partial and the reason is in Error and in a "Не получено" section at the top of the page.
 - Retries: 3 attempts, then Status = Error with the reason. Setting Status back to New does **not** trigger the webhook (only new rows do) — run the workflow manually or wait for cron.
-- Instagram: Cobalt returns empty files from GitHub IPs; yt-dlp works. Large backlogs may get rate-limited → add cookies of a separate account.
+- Instagram: without login, many posts return "empty media response" (yt-dlp) and only the first carousel image (Cobalt). Fix: log in to Instagram with a separate account, export its cookies and add them to `YTDLP_COOKIES` (Netscape cookies.txt may hold instagram.com and youtube.com together) and to `COBALT_COOKIES`.
 - YouTube: needs `YTDLP_COOKIES` (GitHub IPs are bot-checked); cookies expire if the account logs in elsewhere — re-export then.
 - LinkedIn: login wall, not supported yet.
-- Quality: brand names can be misspelled in transcripts; tools shown only on screen (not spoken) are missed; the LLM reads the first 12 000 chars.
+- Quality: brand names can be misspelled in transcripts; on-screen text is read by OCR of up to 40 frames, so small or stylised text can still be missed; the LLM reads the first 12 000 chars.
 - GitHub cache (~5.6 GB models) is evicted after 7 days without runs → next run downloads again (+ a few minutes).
 - Public repo: code and logs are public; logs contain page ids only, never URLs or content.
 - Free quotas: GitHub Actions unlimited for public repos; Cloudflare Workers 100k requests/day; Notion API ~3 req/s.
