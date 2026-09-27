@@ -4,9 +4,11 @@
 //          NOTION_VERIFICATION_TOKEN (shown once when the Notion webhook subscription is verified).
 const DISPATCH="https://api.github.com/repos/zkblk/ai-office/actions/workflows/idea-inbox.yml/dispatches";
 const hex=buf=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+// NOTION_VERIFICATION_TOKEN may hold several comma-separated tokens (one per subscription / re-verification).
 async function signed(env,body,header){if(!env.NOTION_VERIFICATION_TOKEN)return true;
-  const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(env.NOTION_VERIFICATION_TOKEN),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
-  return header==="sha256="+hex(await crypto.subtle.sign("HMAC",key,new TextEncoder().encode(body)))}
+  for(const t of env.NOTION_VERIFICATION_TOKEN.split(",")){const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(t.trim()),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+    if(header==="sha256="+hex(await crypto.subtle.sign("HMAC",key,new TextEncoder().encode(body))))return true}
+  console.log("bad signature");return false}
 export default{async fetch(request,env,ctx){
   if(request.method!=="POST")return new Response("idea-inbox relay ok");
   const body=await request.text();let event;try{event=JSON.parse(body)}catch{return new Response("bad json",{status:400})}
