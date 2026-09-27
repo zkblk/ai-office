@@ -24,9 +24,10 @@ async function pending(limit=100){const d=await notion(`data_sources/${cfg.ds}/q
   {and:[{property:'Status',select:{equals:'Processing'}},{timestamp:'last_edited_time',last_edited_time:{before:STALE()}}]}]}});return d.results}
 const update=(id,properties)=>notion('pages/'+id,'PATCH',{properties});
 // Replace blocks this integration wrote earlier (re-processing), keep anything the user or Web Clipper added.
-async function writeBody(id,botId,sections){let cursor;do{const d=await notion(`blocks/${id}/children?page_size=100${cursor?'&start_cursor='+cursor:''}`);for(const b of d.results)if(b.created_by?.id===botId)await notion('blocks/'+b.id,'DELETE');cursor=d.has_more&&d.next_cursor}while(cursor);
+async function writeBody(id,botId,sections,url){let cursor;do{const d=await notion(`blocks/${id}/children?page_size=100${cursor?'&start_cursor='+cursor:''}`);for(const b of d.results)if(b.created_by?.id===botId)await notion('blocks/'+b.id,'DELETE');cursor=d.has_more&&d.next_cursor}while(cursor);
 // A section body is either text (→ paragraphs) or an array (→ bullet list).
-const blocks=[];for(const[h,body]of sections){if(!body?.length)continue;blocks.push({type:'heading_2',heading_2:{rich_text:text(h)}});
+// First line of every page: a clickable link to the original post/video/article.
+const blocks=url?[{type:'paragraph',paragraph:{rich_text:[{type:'text',text:{content:'🔗 Оригинал: '}},{type:'text',text:{content:url.slice(0,1900),link:{url}}}]}}]:[];for(const[h,body]of sections){if(!body?.length)continue;blocks.push({type:'heading_2',heading_2:{rich_text:text(h)}});
   if(Array.isArray(body))for(const item of body)blocks.push({type:'bulleted_list_item',bulleted_list_item:{rich_text:text(String(item).slice(0,1900))}});
   else for(const chunk of paragraphs(body))blocks.push({type:'paragraph',paragraph:{rich_text:text(chunk)}})}
 for(let i=0;i<blocks.length;i+=100)await notion(`blocks/${id}/children`,'PATCH',{children:blocks.slice(i,i+100)})}
@@ -89,7 +90,7 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   await update(id,{Name:{title:text(d.title||meta.title||page2.title||title||url)},URL:{url},Status:{select:{name:'Done'}},Source:{select:{name:src}},Category:{select:{name:d.category}},
     Author:{rich_text:text(meta.author||page2.author||'')},...(meta.published?{Published:{date:{start:meta.published}}}:{}),Summary:{rich_text:text(d.summary)},'Why useful':{rich_text:text(d.why_useful)},
     Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools)},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(m.wav||slideText?'':'Text only, no audio. '+(m.errors||[]).join('; '))}});
-  await writeBody(id,botId,[['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Article text',article]]);
+  await writeBody(id,botId,[['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Article text',article]],url);
   log(id,'done',m.via||'text-only',transcript.length,'chars')}
   catch(e){const retry=attempts<cfg.maxAttempts;await update(id,{Status:{select:{name:retry?'New':'Error'}},Error:{rich_text:text(String(e.message).slice(0,1900))}}).catch(()=>{});log(id,retry?'failed, will retry':'failed')}
   finally{await rm(dir,{recursive:true,force:true})}}
