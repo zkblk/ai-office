@@ -64,7 +64,8 @@ A GitHub cron (every 15 min) is a fallback trigger; in practice GitHub runs it r
 |---|---|---|
 | `NOTION_TOKEN` | GitHub Actions secrets | processor reads/writes Notion |
 | `YTDLP_COOKIES` | GitHub Actions secrets | YouTube login (separate Google account a.kablucho@gmail.com) |
-| `COBALT_COOKIES` | GitHub Actions secrets (optional) | Cobalt login walls |
+| `IG_COOKIES` | GitHub Actions secrets | Instagram login for yt-dlp (burner account), merged with YTDLP_COOKIES at run time |
+| `COBALT_COOKIES` | GitHub Actions secrets | Same Instagram session for Cobalt (carousel slides), JSON built from the cookies.txt |
 | `GITHUB_TOKEN` | Cloudflare Worker secret | fine-grained PAT, Actions read/write on this repo only; expires after 1 year |
 | `NOTION_VERIFICATION_TOKEN` | Cloudflare Worker secret | verifies webhook signatures (comma-separated if several) |
 

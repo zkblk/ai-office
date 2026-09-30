@@ -1,6 +1,7 @@
 # Idea Inbox processor: every 15 minutes, process new rows in the Notion database.
 # Secrets:   NOTION_TOKEN (Notion internal integration, shared with the Idea Inbox database)
-#            YTDLP_COOKIES (optional, Netscape cookies.txt), COBALT_COOKIES (optional, Cobalt cookies.json)
+#            YTDLP_COOKIES (YouTube, Netscape cookies.txt), IG_COOKIES (Instagram, Netscape cookies.txt),
+#            COBALT_COOKIES (Cobalt cookies.json: {"instagram":["mid=…; ig_did=…; csrftoken=…; ds_user_id=…; sessionid=…"]})
 # Variables: NOTION_DATA_SOURCE_ID, optional LLM_MODEL, SUMMARY_LANGUAGE, MAX_ITEMS
 # The repo is public: logs are public. Never echo URLs, transcripts or secrets here.
 name: idea-inbox
@@ -79,7 +80,11 @@ jobs:
 
       - name: Process
         if: steps.queue.outputs.pending != '0'
-        env: { YTDLP_COOKIES: "${{ secrets.YTDLP_COOKIES }}" }
+        env: { YTDLP_COOKIES: "${{ secrets.YTDLP_COOKIES }}", IG_COOKIES: "${{ secrets.IG_COOKIES }}" }
         run: |
-          if [ -n "$YTDLP_COOKIES" ]; then printf '%s' "$YTDLP_COOKIES" > "$RUNNER_TEMP/yt-cookies.txt"; export YTDLP_COOKIES_FILE="$RUNNER_TEMP/yt-cookies.txt"; fi
+          # One Netscape cookie jar for yt-dlp: YouTube (YTDLP_COOKIES) + Instagram (IG_COOKIES). The header line is mandatory.
+          if [ -n "$YTDLP_COOKIES$IG_COOKIES" ]; then
+            { printf '# Netscape HTTP Cookie File\n'; printf '%s\n' "$YTDLP_COOKIES" | grep -v '^#'; printf '%s\n' "$IG_COOKIES" | grep -v '^#'; } > "$RUNNER_TEMP/yt-cookies.txt"
+            export YTDLP_COOKIES_FILE="$RUNNER_TEMP/yt-cookies.txt"
+          fi
           COBALT_URL=http://localhost:9000 PARAKEET_CLI=~/parakeet/parakeet-cli PARAKEET_MODEL=~/parakeet/model.gguf node processor/index.mjs
