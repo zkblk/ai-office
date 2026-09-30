@@ -40,7 +40,7 @@ GitHub Actions "idea-inbox"  (.github/workflows/idea-inbox.yml, processor/)
       transcript parakeet.cpp, Parakeet TDT 0.6B v3 (25 langs incl. ru/uk/en), CPU
       slides     Cobalt picker → Tesseract OCR (rus+eng), up to 20 images
       screen     short videos (Reels, Threads, Shorts): frames at scene changes → Tesseract, each line once
-      digest     Ollama qwen2.5:7b → title, key points, summary, why useful,
+      digest     Ollama qwen2.5:3b (LLM_MODEL var) → title, key points, summary, why useful,
                  category, tags, tools, people, links  (written in Russian)
       screen     every video: up to 40 frames (scene changes, or evenly spaced if > 150 s) → Tesseract OCR
    4. write back to the same Notion page, Status = Done

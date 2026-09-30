@@ -186,8 +186,8 @@ if(!cfg.token||!cfg.ds){console.error('NOTION_TOKEN and NOTION_DATA_SOURCE_ID ar
 const addUrl=process.argv[process.argv.indexOf('--add')+1];if(process.argv.includes('--add')){const p=await notion('pages','POST',{parent:{type:'data_source_id',data_source_id:cfg.ds},properties:{Name:{title:[{text:{content:addUrl}}]},URL:{url:addUrl},Status:{select:{name:'New'}}}});log('added',p.id);process.exit(0)}
 if(process.argv.includes('--count')){console.log((await pending()).length);process.exit(0)}
 if(!cfg.model){console.error('PARAKEET_MODEL is required');process.exit(1)}
-const botId=(await notion('users/me')).id,start=Date.now();let done=0;
-for(const page of await pending(cfg.maxItems)){if(Date.now()-start>cfg.budgetMs)break;await handle(page,botId);done++;
-  // Be gentle with Instagram when draining an old backlog.
-  if(source(page.properties.URL?.url||plain(page.properties.Name))==='Instagram')await sleep(Number(env.INSTAGRAM_DELAY_SEC||20)*1000)}
+const botId=(await notion('users/me')).id,start=Date.now();let done=0;const queue=await pending(cfg.maxItems);
+for(const[i,page]of queue.entries()){if(Date.now()-start>cfg.budgetMs)break;await handle(page,botId);done++;
+  // Be gentle with Instagram when draining a backlog; no pause after the last item.
+  if(i<queue.length-1&&source(page.properties.URL?.url||plain(page.properties.Name))==='Instagram')await sleep(Number(env.INSTAGRAM_DELAY_SEC||20)*1000)}
 log('processed',done)

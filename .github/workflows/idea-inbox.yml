@@ -17,10 +17,11 @@ env:
   NOTION_DATA_SOURCE_ID: ${{ vars.NOTION_DATA_SOURCE_ID || '4fd5ba03-9001-4bd8-ad00-b42ccc6a0f72' }}
   # Resource Catalog data source: tools found in captures are filed there as 📥 Inbox. Needs the catalog page shared with the integration.
   CATALOG_DATA_SOURCE_ID: ${{ vars.CATALOG_DATA_SOURCE_ID || 'd3894a68-151d-40ad-838a-259a97b851f2' }}
-  LLM_MODEL: ${{ vars.LLM_MODEL || 'qwen2.5:7b' }}
+  LLM_MODEL: ${{ vars.LLM_MODEL || 'qwen2.5:3b' }}
   SUMMARY_LANGUAGE: ${{ vars.SUMMARY_LANGUAGE || 'Russian' }}
   MAX_ITEMS: ${{ vars.MAX_ITEMS || '15' }}
   PARAKEET_VERSION: v0.5.0
+  OLLAMA_VERSION: v0.35.0
   PARAKEET_MODEL_FILE: tdt-0.6b-v3-q8_0.gguf
 jobs:
   process:
@@ -48,6 +49,10 @@ jobs:
         if: steps.queue.outputs.pending != '0'
         uses: actions/cache@v4
         with: { path: ~/.ollama/models, key: "ollama-${{ env.LLM_MODEL }}" }
+      - name: Cache Ollama binary
+        if: steps.queue.outputs.pending != '0'
+        uses: actions/cache@v4
+        with: { path: ~/ollama-bin, key: "ollama-bin-${{ env.OLLAMA_VERSION }}" }
 
       - name: Install Deno (yt-dlp needs a JS runtime for YouTube)
         if: steps.queue.outputs.pending != '0'
@@ -63,11 +68,13 @@ jobs:
             curl -sSL "https://github.com/mudler/parakeet.cpp/releases/download/$PARAKEET_VERSION/parakeet-$PARAKEET_VERSION-bin-linux-cpu-x64.tar.gz" | tar xz --strip-components=1 -C ~/parakeet
           fi
           [ -f ~/parakeet/model.gguf ] || curl -sSL -o ~/parakeet/model.gguf "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/$PARAKEET_MODEL_FILE"
-          curl -fsSL https://ollama.com/install.sh | sh >/dev/null 2>&1
-          sudo systemctl stop ollama 2>/dev/null || true
-          OLLAMA_MODELS=~/.ollama/models nohup ollama serve >/dev/null 2>&1 &
+          # Ollama from the release tarball (cached), not the install script: no systemd, no GPU driver probing.
+          if [ ! -x ~/ollama-bin/bin/ollama ]; then
+            mkdir -p ~/ollama-bin && curl -sSL "https://github.com/ollama/ollama/releases/download/$OLLAMA_VERSION/ollama-linux-amd64.tar.zst" | tar --zstd -x -C ~/ollama-bin --exclude='*cuda*' --exclude='*rocm*' --exclude='*mlx*'
+          fi
+          OLLAMA_MODELS=~/.ollama/models nohup ~/ollama-bin/bin/ollama serve >/dev/null 2>&1 &
           for i in $(seq 1 30); do curl -sf localhost:11434/api/version >/dev/null && break; sleep 1; done
-          OLLAMA_MODELS=~/.ollama/models ollama pull "$LLM_MODEL" >/dev/null 2>&1
+          OLLAMA_MODELS=~/.ollama/models ~/ollama-bin/bin/ollama pull "$LLM_MODEL" >/dev/null 2>&1
 
       - name: Start Cobalt
         if: steps.queue.outputs.pending != '0'
