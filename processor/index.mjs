@@ -100,6 +100,7 @@ Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 se
 "tools": [{"name": product name as written on its site, "url": its URL or domain if it appears anywhere in the text, transcript or on-screen text — else "", "what": one line in English: what it is and what it is used for, "super_category": one of ${JSON.stringify(SUPER)}, "want": 1-3 of ${JSON.stringify(WANT)}, "pricing": one of ${JSON.stringify(PRICING)} or "" if unknown}]}.
 "tools" = only things one can open and use: apps, web services, websites, libraries, plugins, models, extensions. Not the author's own studio or channel, not client brands, not people, not activities or generic categories like "video editing".
 A tool must literally appear (its name or domain) in the provided text. If the post promises "7 sites" but names none, return "tools": [] — never fill the list with well-known tools that are not in the text.
+OCR text of slides and video frames counts as text: a site or product name written on a slide (e.g. "minimal gallery", "godly design", "klikkenthéke") is a tool even when no domain is shown — return it with "url": "". Slide lists usually name one resource per slide; OCR is noisy, so keep the name as it appears and ignore the noise around it.
 Names and domains on screen matter: a domain like "figma.com" on a slide is a tool even if never spoken. Use the exact spelling from on-screen text or URLs over the phonetic transcript spelling.
 Write title, summary, why_useful and key_points in ${cfg.lang}. Use [] when nothing fits. Do not invent facts or URLs.`;
   // Streamed: on CPU the prompt can take minutes, and a non-streamed call trips Node's 300 s headers timeout. Input capped so one item stays ~1–2 min.
@@ -108,19 +109,30 @@ Write title, summary, why_useful and key_points in ${cfg.lang}. Use [] when noth
   // Tools may come back as strings (older prompt / model shortcut) — normalise to objects.
   const all=(Array.isArray(j.tools)?j.tools:[]).map(t=>typeof t==='string'?{name:t}:t).filter(t=>t&&t.name).map(t=>({...t,name:String(t.name).trim().slice(0,100),url:String(t.url||'').trim(),what:String(t.what||'').trim().slice(0,300)}));
   // Hard guard against invented tools: keep only those whose name or domain occurs in the source text.
-  const norm=s=>String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu,''),hay=norm(input),raw=input.toLowerCase();
+  const hay=norm(input),raw=input.toLowerCase();
   const tools=all.filter(t=>{const n=norm(t.name),dom=domainOf(t.url);return(n.length>=3&&hay.includes(n))||(dom&&raw.includes(dom))});
   const dropped=all.length-tools.length;if(dropped)log('tools not in source, dropped:',dropped,'of',all.length);
   return{...j,tools,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
 
 // ---------- Resource Catalog ----------
 const domainOf=u=>{try{return new URL(/^https?:\/\//i.test(u)?u:'https://'+u).hostname.replace(/^www\./,'').toLowerCase()}catch{return''}};
+const norm=s=>String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
 const pageUrl=id=>'https://www.notion.so/'+id.replace(/-/g,'');
+// Name-only tools (named on a slide, no domain shown): best-effort URL from a Bing search (DuckDuckGo serves a bot
+// challenge). Bing hides targets in ck/a?…&u=a1<base64url>. Kept only when the result's domain or title echoes the
+// name, so a wrong hit is unlikely; the catalog row still says "verify".
+async function findUrl(name){try{const r=await fetch('https://www.bing.com/search?cc=US&setlang=en&q='+encodeURIComponent(name),{headers:{'user-agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36','accept-language':'en-US,en'},signal:AbortSignal.timeout(15000)});if(!r.ok)return'';const html=await r.text();
+  // The whole name (spaces/punctuation removed) must occur in the result's domain or title; a partial match is not enough.
+  const key=norm(name);if(key.length<4)return'';const b64=s=>Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString('utf8');
+  const hits=[...html.matchAll(/<li class="b_algo"[\s\S]*?<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].map(m=>{const u=/[?&]u=a1([A-Za-z0-9_-]+)/.exec(m[1].replace(/&amp;/g,'&'));return{url:u?b64(u[1]):m[1],title:m[2].replace(/<[^>]+>/g,'')}})
+    .filter(h=>/^https?:/.test(h.url)&&!/instagram\.|youtube\.|facebook\.|tiktok\.|wikipedia\.|reddit\.|pinterest\.|linkedin\.|bing\./.test(h.url));
+  const top=hits.slice(0,5),hit=top.find(h=>norm(domainOf(h.url)).includes(key))||top.find(h=>norm(h.title).includes(key));return hit?'https://'+domainOf(hit.url):''}catch{return''}}
 let catalogDown='';// set once the catalog turns out to be unreachable, so we stop retrying within the run
 // Files every tool of a capture into the Resource Catalog as 📥 Inbox (skips ones already there, matched by domain or name).
 // Returns rich_text lines for the page body: name → catalog page, added / already there.
 async function catalogAdd(tools,captureId){if(!cfg.catalog||catalogDown||!tools.length)return[];const lines=[];
-  for(const t of tools.slice(0,10)){try{const domain=domainOf(t.url),url=domain?'https://'+domain+(t.url.includes('/')&&!/^https?:\/\/[^/]+\/?$/.test(t.url)?new URL(/^https?:\/\//i.test(t.url)?t.url:'https://'+t.url).pathname.replace(/\/$/,''):''):'';
+  for(const t of tools.slice(0,10)){try{if(!t.url){const u=await findUrl(t.name);if(u){t.url=u;t.searched=true;log('url by search for',t.name)}}
+    const domain=domainOf(t.url),url=domain?'https://'+domain+(t.url.includes('/')&&!/^https?:\/\/[^/]+\/?$/.test(t.url)?new URL(/^https?:\/\//i.test(t.url)?t.url:'https://'+t.url).pathname.replace(/\/$/,''):''):'';
     const filter=domain?{property:'URL',url:{contains:domain}}:{property:'Name',title:{contains:t.name}};
     const found=(await notion(`data_sources/${cfg.catalog}/query`,'POST',{page_size:3,filter})).results.find(r=>domain||plain(r.properties.Name).trim().toLowerCase()===t.name.toLowerCase());
     if(found){lines.push([{type:'text',text:{content:t.name,link:{url:pageUrl(found.id)}}},{type:'text',text:{content:' — уже в каталоге'}}]);continue}
@@ -128,8 +140,8 @@ async function catalogAdd(tools,captureId){if(!cfg.catalog||catalogDown||!tools.
     const page=await notion('pages','POST',{parent:{type:'data_source_id',data_source_id:cfg.catalog},properties:{Name:{title:text(t.name)},...(url?{URL:{url}}:{}),Description:{rich_text:text(t.what)},'Use it for':{rich_text:text(t.what)},
       Status:{select:{name:'📥 Inbox'}},Link:{select:{name:live?'✅ Live':'❓ Unknown'}},...(SUPER.includes(t.super_category)?{'Super Category':{select:{name:t.super_category}}}:{}),
       'I want to…':{multi_select:opts((Array.isArray(t.want)?t.want:[t.want]).filter(w=>WANT.includes(w)))},...(PRICING.includes(t.pricing)?{Pricing:{select:{name:t.pricing}}}:{}),
-      Notes:{rich_text:text(`From Idea Inbox: ${pageUrl(captureId)}`+(url?'':'\nURL not in the source — verify.'))},Keywords:{rich_text:text(t.name.toLowerCase())}}});
-    lines.push([{type:'text',text:{content:t.name,link:{url:pageUrl(page.id)}}},{type:'text',text:{content:' — добавлен в каталог'+(url?'':' (без ссылки)')}}]);log('catalog +',page.id)}
+      Notes:{rich_text:text(`From Idea Inbox: ${pageUrl(captureId)}`+(t.searched?'\nURL found by web search, not in the source — verify.':url?'':'\nURL not in the source — verify.'))},Keywords:{rich_text:text(t.name.toLowerCase())}}});
+    lines.push([{type:'text',text:{content:t.name,link:{url:pageUrl(page.id)}}},{type:'text',text:{content:' — добавлен в каталог'+(t.searched?' (ссылка найдена поиском, проверь)':url?'':' (без ссылки)')}}]);log('catalog +',page.id)}
     catch(e){if(/notion 404|object_not_found|Could not find/i.test(e.message)){catalogDown='Каталог ресурсов не открыт для интеграции Idea Inbox: страница 🧰 Resource Catalog → ••• → Connections → Idea Inbox.';log('catalog unreachable');return lines}
       log('catalog failed:',e.message.slice(0,120))}}
   return lines}
