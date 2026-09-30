@@ -42,7 +42,12 @@ GitHub Actions "idea-inbox"  (.github/workflows/idea-inbox.yml, processor/)
       screen     short videos (Reels, Threads, Shorts): frames at scene changes → Tesseract, each line once
       digest     Ollama qwen2.5:7b → title, key points, summary, why useful,
                  category, tags, tools, people, links  (written in Russian)
+      screen     every video: up to 40 frames (scene changes, or evenly spaced if > 150 s) → Tesseract OCR
    4. write back to the same Notion page, Status = Done
+   5. Resource Catalog rule: every tool the digest finds (with URL/domain when it appears in text or on screen)
+      is filed into the Resources data source as 📥 Inbox — skipped if a row with that domain or name exists.
+      The capture page lists them under "Каталог ресурсов" with links. Needs the catalog page shared with
+      the Idea Inbox connection; otherwise the page says so in "Не получено".
 ```
 A GitHub cron (every 15 min) is a fallback trigger; in practice GitHub runs it rarely, so the webhook is the real trigger.
 

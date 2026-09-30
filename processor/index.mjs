@@ -8,8 +8,14 @@ import{execFile}from'node:child_process';import{promisify}from'node:util';import
 const run=promisify(execFile),env=process.env;
 const cfg={token:env.NOTION_TOKEN,ds:env.NOTION_DATA_SOURCE_ID,cobalt:(env.COBALT_URL||'').replace(/\/$/,''),parakeet:env.PARAKEET_CLI||'parakeet-cli',model:env.PARAKEET_MODEL,
   ollama:(env.OLLAMA_URL||'http://localhost:11434').replace(/\/$/,''),llm:env.LLM_MODEL||'qwen2.5:7b',lang:env.SUMMARY_LANGUAGE||'the same language as the content',
-  ytCookies:env.YTDLP_COOKIES_FILE,maxItems:Number(env.MAX_ITEMS||15),budgetMs:Number(env.TIME_BUDGET_MIN||45)*60000,maxAttempts:3};
+  ytCookies:env.YTDLP_COOKIES_FILE,maxItems:Number(env.MAX_ITEMS||15),budgetMs:Number(env.TIME_BUDGET_MIN||45)*60000,maxAttempts:3,
+  // Resource Catalog (Notion data source). Every tool found in a capture is filed there as 📥 Inbox unless it already exists.
+  catalog:env.CATALOG_DATA_SOURCE_ID};
 const CATEGORIES=(env.CATEGORIES||'AI tools,Design & UX,Development,Product,Marketing,Business,Productivity,Career,Finance,Health,Lifestyle,Other').split(',');
+// Option lists of the Resource Catalog schema (Super Category, "I want to…", Pricing). Keep in sync with Notion.
+const SUPER=['🎨 Inspiration & Galleries','🧩 UI Components & Code','✨ Motion & Effects','🖼️ Visual Assets','🤖 AI Agents & Coding','🛠️ Dev Tools & Infra','🔓 Open-Source SaaS Alts','💼 Productivity & Career'];
+const WANT=['Sections & Landing','Backgrounds & Gradients','Icons','Fonts & Typography','Colors & Palettes','Illustrations & SVG','3D & WebGL','Motion & Effects','Image Effects','UI Components','Design System','Framer & Figma Resources','Accessibility','Moodboard & Inspiration','Mobile & App Flows','Loaders / 404 / States','Forms','Charts & Maps','Mockups & Screenshots','Video & Media','Branding & Identity','Portfolio & CV','E-commerce','Website Templates','AI Prompts for Design','AI Coding & Agents','Terminal & CLI','Deploy & Hosting','Monitoring & Analytics','SEO & Launch','CMS & Backend','Automation & Scraping','Dev Utilities','Project Mgmt & Team','Personal Productivity','Business & Marketing','Learning & Tutorials'];
+const PRICING=['Free','Open-Source','Freemium','Free Trial','One-time','Paid'];
 const log=(...a)=>console.log(new Date().toISOString().slice(11,19),...a);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -28,7 +34,8 @@ async function writeBody(id,botId,sections,url){let cursor;do{const d=await noti
 // A section body is either text (→ paragraphs) or an array (→ bullet list).
 // First line of every page: a clickable link to the original post/video/article.
 const blocks=url?[{type:'paragraph',paragraph:{rich_text:[{type:'text',text:{content:'🔗 Оригинал: '}},{type:'text',text:{content:url.slice(0,1900),link:{url}}}]}}]:[];for(const[h,body]of sections){if(!body?.length)continue;blocks.push({type:'heading_2',heading_2:{rich_text:text(h)}});
-  if(Array.isArray(body))for(const item of body)blocks.push({type:'bulleted_list_item',bulleted_list_item:{rich_text:text(String(item).slice(0,1900))}});
+  // A list item is a string or a ready rich_text array (used for links).
+  if(Array.isArray(body))for(const item of body)blocks.push({type:'bulleted_list_item',bulleted_list_item:{rich_text:Array.isArray(item)?item:text(String(item).slice(0,1900))}});
   else for(const chunk of paragraphs(body))blocks.push({type:'paragraph',paragraph:{rich_text:text(chunk)}})}
 for(let i=0;i<blocks.length;i+=100)await notion(`blocks/${id}/children`,'PATCH',{children:blocks.slice(i,i+100)})}
 // ~1800-char paragraphs split on sentence boundaries so Notion stays readable and under its 2000-char limit.
@@ -64,11 +71,14 @@ async function slides(url,dir){try{const r=await fetch(cfg.cobalt+'/',{method:'P
     const t=ocrLines(stdout).join('\n');if(t)out.push(`Slide ${i+1}:\n${t}`)}catch(e){log('slide',i+1,'failed:',e.message.split('\n')[0].slice(0,120))}}
   log('slides',urls.length,'with text',out.length);return{text:out.join('\n\n'),count:urls.length}}catch(e){log('slides skipped:',e.message.slice(0,120));return{text:'',count:0}}}
 
-// Reels often show their list on screen without saying it. Sample frames at scene changes (every 2 s if the video
-// has few cuts), OCR each and keep every line once, in order of appearance.
+// Videos often show their list, tool names and domains on screen without saying them. Sample up to 40 frames:
+// short clips at scene changes (every 2 s if there are few cuts), long videos evenly across the whole duration.
+// OCR each frame and keep every line once, in order of appearance.
 async function screenText(url,dir){try{await run('yt-dlp',['-f','bv*[height<=1080]/b',...ytArgs(),'-o',join(dir,'video.%(ext)s'),url],{timeout:10*60000});
   const video=(await readdir(dir)).find(n=>n.startsWith('video.'));if(!video)return'';const frames=async()=>(await readdir(dir)).filter(n=>/^(scene|tick)-/.test(n)).sort();
-  await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf',"select='eq(n\\,0)+gt(scene\\,0.2)',scale=1080:-2",'-fps_mode','vfr','-frames:v','40',join(dir,'scene-%03d.png')],{timeout:5*60000});
+  const dur=Number((await run('ffprobe',['-v','error','-show_entries','format=duration','-of','csv=p=0',join(dir,video)]).catch(()=>({stdout:'0'}))).stdout)||0;
+  if(dur>150)await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf',`fps=${40/dur},scale=1080:-2`,'-frames:v','40',join(dir,'tick-%03d.png')],{timeout:10*60000});
+  else await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf',"select='eq(n\\,0)+gt(scene\\,0.2)',scale=1080:-2",'-fps_mode','vfr','-frames:v','40',join(dir,'scene-%03d.png')],{timeout:5*60000});
   if((await frames()).length<4)await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf','fps=1/2,scale=1080:-2','-frames:v','40',join(dir,'tick-%03d.png')],{timeout:5*60000});
   const seen=new Set(),out=[],list=await frames();for(const f of list){const{stdout}=await run('tesseract',[join(dir,f),'stdout','-l','rus+eng'],{timeout:120000}).catch(()=>({stdout:''}));
     for(const l of ocrLines(stdout)){const k=l.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');if(k.length>2&&!seen.has(k)){seen.add(k);out.push(l)}}}
@@ -80,11 +90,38 @@ async function digest(input){const prompt=`You file saved social posts, videos a
 Transcripts are machine-generated: product and brand names may be spelled phonetically — write them correctly.
 Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 sentences on what it says, "why_useful": 1-2 sentences on why it could be useful later,
 "key_points": the concrete points, steps, tips or list items exactly as the author gives them, in order — one short sentence each, keep names, numbers and specifics (up to 12; if the author says "5 things", return those 5),
-"category": one of ${JSON.stringify(CATEGORIES)}, "tags": 3-6 lowercase topic tags, "tools": names of specific products, apps, services or companies (proper nouns only — never activities, techniques or generic categories like "video editing"), "people": people mentioned, "links": URLs or domains mentioned}.
-Write title, summary, why_useful and key_points in ${cfg.lang}. Use [] when nothing fits. Do not invent facts.`;
+"category": one of ${JSON.stringify(CATEGORIES)}, "tags": 3-6 lowercase topic tags, "people": people mentioned, "links": URLs or domains mentioned,
+"tools": [{"name": product name as written on its site, "url": its URL or domain if it appears anywhere in the text, transcript or on-screen text — else "", "what": one line in English: what it is and what it is used for, "super_category": one of ${JSON.stringify(SUPER)}, "want": 1-3 of ${JSON.stringify(WANT)}, "pricing": one of ${JSON.stringify(PRICING)} or "" if unknown}]}.
+"tools" = only things one can open and use: apps, web services, websites, libraries, plugins, models, extensions. Not the author's own studio or channel, not client brands, not people, not activities or generic categories like "video editing".
+Names and domains on screen matter: a domain like "figma.com" on a slide is a tool even if never spoken. Use the exact spelling from on-screen text or URLs over the phonetic transcript spelling.
+Write title, summary, why_useful and key_points in ${cfg.lang}. Use [] when nothing fits. Do not invent facts or URLs.`;
   // Streamed: on CPU the prompt can take minutes, and a non-streamed call trips Node's 300 s headers timeout. Input capped so one item stays ~1–2 min.
   const r=await fetch(cfg.ollama+'/api/chat',{method:'POST',body:JSON.stringify({model:cfg.llm,stream:true,format:'json',options:{temperature:0.2,num_ctx:8192},messages:[{role:'system',content:prompt},{role:'user',content:input.slice(0,12000)}]}),signal:AbortSignal.timeout(20*60000)});
-  if(!r.ok)throw new Error('ollama '+r.status);let out='';for(const line of(await r.text()).split('\n'))if(line.trim())out+=JSON.parse(line).message?.content||'';const j=JSON.parse(out||'{}');return{...j,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
+  if(!r.ok)throw new Error('ollama '+r.status);let out='';for(const line of(await r.text()).split('\n'))if(line.trim())out+=JSON.parse(line).message?.content||'';const j=JSON.parse(out||'{}');
+  // Tools may come back as strings (older prompt / model shortcut) — normalise to objects.
+  const tools=(Array.isArray(j.tools)?j.tools:[]).map(t=>typeof t==='string'?{name:t}:t).filter(t=>t&&t.name).map(t=>({...t,name:String(t.name).trim().slice(0,100),url:String(t.url||'').trim(),what:String(t.what||'').trim().slice(0,300)}));
+  return{...j,tools,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
+
+// ---------- Resource Catalog ----------
+const domainOf=u=>{try{return new URL(/^https?:\/\//i.test(u)?u:'https://'+u).hostname.replace(/^www\./,'').toLowerCase()}catch{return''}};
+const pageUrl=id=>'https://www.notion.so/'+id.replace(/-/g,'');
+let catalogDown='';// set once the catalog turns out to be unreachable, so we stop retrying within the run
+// Files every tool of a capture into the Resource Catalog as 📥 Inbox (skips ones already there, matched by domain or name).
+// Returns rich_text lines for the page body: name → catalog page, added / already there.
+async function catalogAdd(tools,captureId){if(!cfg.catalog||catalogDown||!tools.length)return[];const lines=[];
+  for(const t of tools.slice(0,10)){try{const domain=domainOf(t.url),url=domain?'https://'+domain+(t.url.includes('/')&&!/^https?:\/\/[^/]+\/?$/.test(t.url)?new URL(/^https?:\/\//i.test(t.url)?t.url:'https://'+t.url).pathname.replace(/\/$/,''):''):'';
+    const filter=domain?{property:'URL',url:{contains:domain}}:{property:'Name',title:{contains:t.name}};
+    const found=(await notion(`data_sources/${cfg.catalog}/query`,'POST',{page_size:3,filter})).results.find(r=>domain||plain(r.properties.Name).trim().toLowerCase()===t.name.toLowerCase());
+    if(found){lines.push([{type:'text',text:{content:t.name,link:{url:pageUrl(found.id)}}},{type:'text',text:{content:' — уже в каталоге'}}]);continue}
+    const live=url?await fetch(url,{method:'HEAD',redirect:'follow',signal:AbortSignal.timeout(10000)}).then(r=>r.ok||r.status===405,()=>false):false;
+    const page=await notion('pages','POST',{parent:{type:'data_source_id',data_source_id:cfg.catalog},properties:{Name:{title:text(t.name)},...(url?{URL:{url}}:{}),Description:{rich_text:text(t.what)},'Use it for':{rich_text:text(t.what)},
+      Status:{select:{name:'📥 Inbox'}},Link:{select:{name:live?'✅ Live':'❓ Unknown'}},...(SUPER.includes(t.super_category)?{'Super Category':{select:{name:t.super_category}}}:{}),
+      'I want to…':{multi_select:opts((Array.isArray(t.want)?t.want:[t.want]).filter(w=>WANT.includes(w)))},...(PRICING.includes(t.pricing)?{Pricing:{select:{name:t.pricing}}}:{}),
+      Notes:{rich_text:text(`From Idea Inbox: ${pageUrl(captureId)}`+(url?'':'\nURL not in the source — verify.'))},Keywords:{rich_text:text(t.name.toLowerCase())}}});
+    lines.push([{type:'text',text:{content:t.name,link:{url:pageUrl(page.id)}}},{type:'text',text:{content:' — добавлен в каталог'+(url?'':' (без ссылки)')}}]);log('catalog +',page.id)}
+    catch(e){if(/notion 404|object_not_found|Could not find/i.test(e.message)){catalogDown='Каталог ресурсов не открыт для интеграции Idea Inbox: страница 🧰 Resource Catalog → ••• → Connections → Idea Inbox.';log('catalog unreachable');return lines}
+      log('catalog failed:',e.message.slice(0,120))}}
+  return lines}
 
 // ---------- Job ----------
 async function handle(page,botId){const p=page.properties,id=page.id,title=plain(p.Name);
@@ -95,23 +132,29 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   const transcript=m.wav?await transcribe(m.wav):'';const caption=meta.caption||page2.caption||'';const article=!transcript&&src==='Web'?page2.article||'':'';
   // Posts that are not Reels (/p/ = photo, carousel or mixed) and Threads posts may carry their text on images.
   const sl=cfg.cobalt&&(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir):{text:'',count:0},slideText=sl.text;
-  // Short social videos: also read what is shown on screen (lists, tool names and URLs are often only there).
-  const isVideo=/instagram\.com\/(reels?|tv)\//.test(url)||src==='Threads'||/youtube\.com\/shorts\//.test(url);
-  const screen=isVideo?await screenText(url,dir):'';
+  // Every video, not only Reels: read what is shown on screen (lists, tool names and domains are often only there).
+  const isVideo=!!m.wav||/instagram\.com\/(reels?|tv)\//.test(url)||src==='Threads'||src==='YouTube';
+  const screen=isVideo&&src!=='Web'?await screenText(url,dir):'';
   if(!transcript&&!caption&&!article&&!slideText&&!screen)throw new Error('Nothing extracted. '+(m.errors||[]).join('; '));
   // Say what is missing instead of calling a thin page "Done".
   const gated=/\bcomment\s+["“'«]?[\w-]+["”'»]?\s+(for|to get|and)\b|коммент\S*\s+["«“]?\S+["»”]?\s+(и|чтобы|для)(?=\s)/i.test(caption);
   const missing=[isVideo&&!m.wav&&!screen&&'Видео не скачалось, речь и текст на экране не прочитаны. '+(m.errors||[]).join('; ').replace(/https?:\/\/\S+/g,'<url>'),
     src==='Instagram'&&!m.wav&&sl.count<=1&&`Из карусели получено слайдов: ${sl.count}. Остальные закрыты логином Instagram.`,
     gated&&'Автор выдаёт полный список по комментарию в DM: в самом посте его может не быть.'].filter(Boolean);
-  const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,transcript&&`Transcript:\n${transcript}`,slideText&&`Text on images (OCR):\n${slideText}`,screen&&`Text on screen (OCR of video frames):\n${screen}`,article&&`Article:\n${article}`,
+  // On-screen and slide text go before the transcript: the digest input is capped, and tool names/domains live there.
+  const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,screen&&`Text on screen (OCR of video frames):\n${screen.slice(0,4000)}`,slideText&&`Text on images (OCR):\n${slideText.slice(0,4000)}`,transcript&&`Transcript:\n${transcript}`,article&&`Article:\n${article}`,
     gated&&'Note: the author gives the full list only by comment/DM. Do not invent the missing items; say that the list is not in the post.'].filter(Boolean).join('\n\n');
-  const d=await digest(input);const links=[...new Set([...(d.links||[]),...(caption.match(/https?:\/\/\S+/g)||[])])];
+  const d=await digest(input);const links=[...new Set([...(d.links||[]),...(caption.match(/https?:\/\/\S+/g)||[]),...d.tools.map(t=>t.url).filter(Boolean)])];
+  const catalog=await catalogAdd(d.tools,id);const warnings=[...missing,catalogDown].filter(Boolean);
+  // Catalog verdict for the board: filed / nothing to file / needs a second pass (content incomplete or catalog unreachable).
+  const added=catalog.filter(l=>l[1].text.content.includes('добавлен')).map(l=>l[0].text.content),were=catalog.filter(l=>l[1].text.content.includes('уже')).map(l=>l[0].text.content);
+  const verdict=d.tools.length&&!catalogDown&&!missing.length?'✅ В каталоге':d.tools.length||missing.length||gated?'🔁 Второй проход':'⚪ Не про инструменты';
+  const catalogNote=[added.length&&`В каталоге: ${added.join(', ')}.`,were.length&&`Уже были: ${were.join(', ')}.`,!d.tools.length&&!missing.length&&'Конкретных инструментов в посте нет.',...warnings].filter(Boolean).join(' ');
   await update(id,{Name:{title:text(d.title||meta.title||page2.title||title||url)},URL:{url},Status:{select:{name:missing.length?'Partial':'Done'}},Source:{select:{name:src}},Category:{select:{name:d.category}},
     Author:{rich_text:text(meta.author||page2.author||'')},...(meta.published?{Published:{date:{start:meta.published}}}:{}),Summary:{rich_text:text(d.summary)},'Why useful':{rich_text:text(d.why_useful)},
-    Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools)},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(missing.join('\n'))}});
-  await writeBody(id,botId,[['Не получено',missing],['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Text on screen',screen],['Article text',article]],url);
-  log(id,missing.length?'partial':'done',m.via||'text-only',transcript.length,'chars',screen.length,'screen chars')}
+    Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools.map(t=>t.name))},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(warnings.join('\n'))},Catalog:{select:{name:verdict}},'Catalog note':{rich_text:text(catalogNote.slice(0,1900))}});
+  await writeBody(id,botId,[['Не получено',warnings],['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Инструменты',d.tools.map(t=>[t.name,t.url,t.what].filter(Boolean).join(' — '))],['Каталог ресурсов',catalog],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Text on screen',screen],['Article text',article]],url);
+  log(id,missing.length?'partial':'done',m.via||'text-only',transcript.length,'chars',screen.length,'screen chars',d.tools.length,'tools',catalog.length,'catalog')}
   catch(e){const retry=attempts<cfg.maxAttempts;await update(id,{Status:{select:{name:retry?'New':'Error'}},Error:{rich_text:text(String(e.message).slice(0,1900))}}).catch(()=>{});log(id,retry?'failed, will retry':'failed')}
   finally{await rm(dir,{recursive:true,force:true})}}
 

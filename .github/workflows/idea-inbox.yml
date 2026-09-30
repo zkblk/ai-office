@@ -14,6 +14,8 @@ permissions: { contents: read }
 env:
   NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
   NOTION_DATA_SOURCE_ID: ${{ vars.NOTION_DATA_SOURCE_ID || '4fd5ba03-9001-4bd8-ad00-b42ccc6a0f72' }}
+  # Resource Catalog data source: tools found in captures are filed there as 📥 Inbox. Needs the catalog page shared with the integration.
+  CATALOG_DATA_SOURCE_ID: ${{ vars.CATALOG_DATA_SOURCE_ID || 'd3894a68-151d-40ad-838a-259a97b851f2' }}
   LLM_MODEL: ${{ vars.LLM_MODEL || 'qwen2.5:7b' }}
   SUMMARY_LANGUAGE: ${{ vars.SUMMARY_LANGUAGE || 'Russian' }}
   MAX_ITEMS: ${{ vars.MAX_ITEMS || '15' }}
