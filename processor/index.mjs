@@ -24,7 +24,9 @@ async function notion(path,method='GET',body){for(let i=0;;i++){const r=await fe
 if(r.status===429&&i<5){await sleep(Number(r.headers.get('retry-after')||1)*1000);continue}const d=await r.json();if(!r.ok)throw new Error(`notion ${r.status}: ${d.message}`);return d}}
 const text=s=>{const out=[];s=String(s||'');for(let i=0;i<s.length&&out.length<100;i+=2000)out.push({type:'text',text:{content:s.slice(i,i+2000)}});return out};
 const plain=p=>(p?.title||p?.rich_text||[]).map(t=>t.plain_text).join('');
-const opts=a=>[...new Set((a||[]).map(x=>String(x).replace(/,/g,' ').trim().slice(0,100)).filter(Boolean))].slice(0,15).map(name=>({name}));
+// Small models sometimes return a comma string instead of an array — accept both.
+const arr=x=>Array.isArray(x)?x:typeof x==='string'&&x.trim()?x.split(/[,\n]/).map(s=>s.trim()):[];
+const opts=a=>[...new Set(arr(a).map(x=>String(typeof x==='object'&&x?x.name||'':x).replace(/,/g,' ').trim().slice(0,100)).filter(Boolean))].slice(0,15).map(name=>({name}));
 const STALE=()=>new Date(Date.now()-2*3600000).toISOString();
 async function pending(limit=100){const d=await notion(`data_sources/${cfg.ds}/query`,'POST',{page_size:limit,sorts:[{timestamp:'created_time',direction:'ascending'}],filter:{or:[{property:'Status',select:{is_empty:true}},{property:'Status',select:{equals:'New'}},
   {and:[{property:'Status',select:{equals:'Processing'}},{timestamp:'last_edited_time',last_edited_time:{before:STALE()}}]}]}});return d.results}
@@ -110,7 +112,8 @@ Write title, summary, why_useful and key_points in ${cfg.lang}. Use [] when noth
   const all=(Array.isArray(j.tools)?j.tools:[]).map(t=>typeof t==='string'?{name:t}:t).filter(t=>t&&t.name).map(t=>({...t,name:String(t.name).trim().slice(0,100),url:String(t.url||'').trim(),what:String(t.what||'').trim().slice(0,300)}));
   // Hard guard against invented tools: keep only those whose name or domain occurs in the source text.
   const hay=norm(input),raw=input.toLowerCase();
-  const tools=all.filter(t=>{const n=norm(t.name),dom=domainOf(t.url);return(n.length>=3&&hay.includes(n))||(dom&&raw.includes(dom))});
+  // A URL is kept only if its domain occurs in the source too — small models invent "name.com" domains from names.
+  const tools=all.filter(t=>{const n=norm(t.name),dom=domainOf(t.url);return(n.length>=3&&hay.includes(n))||(dom&&raw.includes(dom))}).map(t=>{const dom=domainOf(t.url);return dom&&raw.includes(dom)?t:{...t,url:''}});
   const dropped=all.length-tools.length;if(dropped)log('tools not in source, dropped:',dropped,'of',all.length);
   return{...j,tools,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
 
@@ -133,8 +136,9 @@ let catalogDown='';// set once the catalog turns out to be unreachable, so we st
 async function catalogAdd(tools,captureId){if(!cfg.catalog||catalogDown||!tools.length)return[];const lines=[];
   for(const t of tools.slice(0,10)){try{if(!t.url){const u=await findUrl(t.name);if(u){t.url=u;t.searched=true;log('url by search for',t.name)}}
     const domain=domainOf(t.url),url=domain?'https://'+domain+(t.url.includes('/')&&!/^https?:\/\/[^/]+\/?$/.test(t.url)?new URL(/^https?:\/\//i.test(t.url)?t.url:'https://'+t.url).pathname.replace(/\/$/,''):''):'';
-    const filter=domain?{property:'URL',url:{contains:domain}}:{property:'Name',title:{contains:t.name}};
-    const found=(await notion(`data_sources/${cfg.catalog}/query`,'POST',{page_size:3,filter})).results.find(r=>domain||plain(r.properties.Name).trim().toLowerCase()===t.name.toLowerCase());
+    const filter={and:[domain?{property:'URL',url:{contains:domain}}:{property:'Name',title:{contains:t.name}},{property:'Status',select:{does_not_equal:'🗄 Archived'}}]};
+    // Match by domain, or by name in either direction ("Godly" ~ "Godly Design Inspiration") so re-runs with a different model do not duplicate.
+    const key=norm(t.name),found=(await notion(`data_sources/${cfg.catalog}/query`,'POST',{page_size:5,filter})).results.find(r=>{const n=norm(plain(r.properties.Name));return domain||n===key||(key.length>=4&&n.includes(key))||(n.length>=4&&key.includes(n))});
     if(found){lines.push([{type:'text',text:{content:t.name,link:{url:pageUrl(found.id)}}},{type:'text',text:{content:' — уже в каталоге'}}]);continue}
     const live=url?await fetch(url,{method:'HEAD',redirect:'follow',signal:AbortSignal.timeout(10000)}).then(r=>r.ok||r.status===405,()=>false):false;
     const page=await notion('pages','POST',{parent:{type:'data_source_id',data_source_id:cfg.catalog},properties:{Name:{title:text(t.name)},...(url?{URL:{url}}:{}),Description:{rich_text:text(t.what)},'Use it for':{rich_text:text(t.what)},
@@ -167,7 +171,7 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   // On-screen and slide text go before the transcript: the digest input is capped, and tool names/domains live there.
   const input=[`Source: ${src}`,`URL: ${url}`,meta.author&&`Author: ${meta.author}`,(meta.title||page2.title)&&`Original title: ${meta.title||page2.title}`,caption&&`Post text:\n${caption}`,screen&&`Text on screen (OCR of video frames):\n${screen.slice(0,4000)}`,slideText&&`Text on images (OCR):\n${slideText.slice(0,4000)}`,transcript&&`Transcript:\n${transcript}`,article&&`Article:\n${article}`,
     gated&&'Note: the author gives the full list only by comment/DM. Do not invent the missing items; say that the list is not in the post.'].filter(Boolean).join('\n\n');
-  const d=await digest(input);const links=[...new Set([...(d.links||[]),...(caption.match(/https?:\/\/\S+/g)||[]),...d.tools.map(t=>t.url).filter(Boolean)])];
+  const d=await digest(input);const links=[...new Set([...arr(d.links).map(String),...(caption.match(/https?:\/\/\S+/g)||[]),...d.tools.map(t=>t.url).filter(Boolean)])];
   const catalog=await catalogAdd(d.tools,id);const warnings=[...missing,catalogDown].filter(Boolean);
   // Catalog verdict for the board: filed / nothing to file / needs a second pass (content incomplete or catalog unreachable).
   const added=catalog.filter(l=>l[1].text.content.includes('добавлен')).map(l=>l[0].text.content),were=catalog.filter(l=>l[1].text.content.includes('уже')).map(l=>l[0].text.content);
@@ -176,7 +180,7 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   await update(id,{Name:{title:text(d.title||meta.title||page2.title||title||url)},URL:{url},Status:{select:{name:missing.length?'Partial':'Done'}},Source:{select:{name:src}},Category:{select:{name:d.category}},
     Author:{rich_text:text(meta.author||page2.author||'')},...(meta.published?{Published:{date:{start:meta.published}}}:{}),Summary:{rich_text:text(d.summary)},'Why useful':{rich_text:text(d.why_useful)},
     Tags:{multi_select:opts(d.tags)},Tools:{multi_select:opts(d.tools.map(t=>t.name))},People:{multi_select:opts(d.people)},Links:{rich_text:text(links.join('\n'))},Error:{rich_text:text(warnings.join('\n'))},Catalog:{select:{name:verdict}},'Catalog note':{rich_text:text(catalogNote.slice(0,1900))}});
-  await writeBody(id,botId,[['Не получено',warnings],['Key points',Array.isArray(d.key_points)?d.key_points.filter(Boolean):[]],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Инструменты',d.tools.map(t=>[t.name,t.url,t.what].filter(Boolean).join(' — '))],['Каталог ресурсов',catalog],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Text on screen',screen],['Article text',article]],url);
+  await writeBody(id,botId,[['Не получено',warnings],['Key points',arr(d.key_points).map(x=>typeof x==='object'&&x?Object.values(x).join(' '):String(x)).filter(Boolean)],['Summary',[d.summary,d.why_useful].filter(Boolean).join('\n\n')],['Инструменты',d.tools.map(t=>[t.name,t.url,t.what].filter(Boolean).join(' — '))],['Каталог ресурсов',catalog],['Post text',caption],['Transcript',transcript||(m.wav?'No speech detected.':'')],['Slides text',slideText],['Text on screen',screen],['Article text',article]],url);
   log(id,missing.length?'partial':'done',m.via||'text-only',transcript.length,'chars',screen.length,'screen chars',d.tools.length,'tools',catalog.length,'catalog')}
   catch(e){const retry=attempts<cfg.maxAttempts;await update(id,{Status:{select:{name:retry?'New':'Error'}},Error:{rich_text:text(String(e.message).slice(0,1900))}}).catch(()=>{});log(id,retry?'failed, will retry':'failed')}
   finally{await rm(dir,{recursive:true,force:true})}}
