@@ -45,7 +45,9 @@ function paragraphs(s){const out=[];let cur='';for(const part of String(s).split
 const source=u=>/instagram\.com/.test(u)?'Instagram':/threads\.(net|com)/.test(u)?'Threads':/youtu\.?be/.test(u)?'YouTube':/linkedin\.com/.test(u)?'LinkedIn':'Web';
 const ytArgs=()=>['--no-warnings','--no-playlist','--quiet',...(cfg.ytCookies?['--cookies',cfg.ytCookies]:[])];
 async function metadata(url){try{const{stdout}=await run('yt-dlp',['-J','--skip-download',...ytArgs(),url],{timeout:90000,maxBuffer:64<<20});const j=JSON.parse(stdout),d=j.upload_date;
-  return{title:j.title||'',author:j.uploader||j.channel||j.creator||'',caption:j.description||'',published:d?`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:''}}catch{return{}}}
+  // Carousel slides come back as playlist entries; the largest thumbnail of a photo entry is the photo itself, of a video entry its poster frame.
+  const pic=e=>e?.thumbnails?.at(-1)?.url||e?.thumbnail||'';const images=[...new Set((j.entries?.length?j.entries.map(pic):[pic(j)]).filter(Boolean))].slice(0,20);
+  return{title:j.title||'',author:j.uploader||j.channel||j.creator||'',caption:j.description||'',published:d?`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:'',images}}catch{return{}}}
 // Plain page text for articles and text posts: og tags + visible text.
 async function pageText(url){try{const r=await fetch(url,{headers:{'user-agent':'Mozilla/5.0 (compatible; IdeaInbox/1.0)'},signal:AbortSignal.timeout(30000)});if(!r.ok)return{};const html=await r.text();
   const meta=k=>html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${k}["'][^>]+content=["']([^"']*)`,'i'))?.[1]||'';const dec=s=>s.replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#x([0-9a-f]+);/gi,(_,h)=>String.fromCodePoint(parseInt(h,16)));
@@ -64,12 +66,16 @@ async function media(url,dir){const errors=[],wav=join(dir,'audio.wav');for(cons
 
 // OCR output → lines that are mostly letters/digits (drops noise).
 const ocrLines=s=>s.split('\n').map(l=>l.trim()).filter(l=>l.length>2&&(l.match(/[\p{L}\p{N}]/gu)||[]).length/l.length>0.6);
-// Photos and carousel slides → text with Tesseract (rus+eng). Cobalt returns every slide as a "picker" item.
-async function slides(url,dir){try{const r=await fetch(cfg.cobalt+'/',{method:'POST',headers:{accept:'application/json','content-type':'application/json'},body:JSON.stringify({url,downloadMode:'auto'})});const d=await r.json();
-  const urls=d.status==='picker'?d.picker.filter(p=>p.type==='photo').map(p=>p.url):(d.status==='tunnel'||d.status==='redirect')&&/\.(jpe?g|png|webp|heic)$/i.test(d.filename||'')?[d.url]:[];
+// Photos and carousel slides → text with Tesseract (rus+eng). Cobalt returns every slide as a "picker" item;
+// when it gives at most one (login wall, tracking params), fall back to the slide images yt-dlp listed (needs cookies).
+async function slides(url,dir,images=[]){let urls=[];try{if(cfg.cobalt){const clean=url.replace(/\?.*$/,'');// Cobalt is picky about ?img_index=&stkn= params
+    const r=await fetch(cfg.cobalt+'/',{method:'POST',headers:{accept:'application/json','content-type':'application/json'},body:JSON.stringify({url:clean,downloadMode:'auto'})});const d=await r.json();
+    urls=d.status==='picker'?d.picker.filter(p=>p.type==='photo').map(p=>p.url):(d.status==='tunnel'||d.status==='redirect')&&/\.(jpe?g|png|webp|heic)$/i.test(d.filename||'')?[d.url]:[];
+    log('cobalt slides:',d.status,d.error?.code||'',urls.length)}}catch(e){log('cobalt slides skipped:',e.message.slice(0,120))}
+  if(urls.length<=1&&images.length>urls.length){urls=images;log('slides from yt-dlp thumbnails:',images.length)}
   const out=[];for(const[i,u]of urls.slice(0,20).entries()){try{const img=await download(u,join(dir,`slide-${i}`));const{stdout}=await run('tesseract',[img,'stdout','-l','rus+eng'],{timeout:120000});
     const t=ocrLines(stdout).join('\n');if(t)out.push(`Slide ${i+1}:\n${t}`)}catch(e){log('slide',i+1,'failed:',e.message.split('\n')[0].slice(0,120))}}
-  log('slides',urls.length,'with text',out.length);return{text:out.join('\n\n'),count:urls.length}}catch(e){log('slides skipped:',e.message.slice(0,120));return{text:'',count:0}}}
+  log('slides',urls.length,'with text',out.length);return{text:out.join('\n\n'),count:urls.length}}
 
 // Videos often show their list, tool names and domains on screen without saying them. Sample up to 40 frames:
 // short clips at scene changes (every 2 s if there are few cuts), long videos evenly across the whole duration.
@@ -93,13 +99,18 @@ Return JSON: {"title": short descriptive title (max 90 chars), "summary": 2-4 se
 "category": one of ${JSON.stringify(CATEGORIES)}, "tags": 3-6 lowercase topic tags, "people": people mentioned, "links": URLs or domains mentioned,
 "tools": [{"name": product name as written on its site, "url": its URL or domain if it appears anywhere in the text, transcript or on-screen text — else "", "what": one line in English: what it is and what it is used for, "super_category": one of ${JSON.stringify(SUPER)}, "want": 1-3 of ${JSON.stringify(WANT)}, "pricing": one of ${JSON.stringify(PRICING)} or "" if unknown}]}.
 "tools" = only things one can open and use: apps, web services, websites, libraries, plugins, models, extensions. Not the author's own studio or channel, not client brands, not people, not activities or generic categories like "video editing".
+A tool must literally appear (its name or domain) in the provided text. If the post promises "7 sites" but names none, return "tools": [] — never fill the list with well-known tools that are not in the text.
 Names and domains on screen matter: a domain like "figma.com" on a slide is a tool even if never spoken. Use the exact spelling from on-screen text or URLs over the phonetic transcript spelling.
 Write title, summary, why_useful and key_points in ${cfg.lang}. Use [] when nothing fits. Do not invent facts or URLs.`;
   // Streamed: on CPU the prompt can take minutes, and a non-streamed call trips Node's 300 s headers timeout. Input capped so one item stays ~1–2 min.
   const r=await fetch(cfg.ollama+'/api/chat',{method:'POST',body:JSON.stringify({model:cfg.llm,stream:true,format:'json',options:{temperature:0.2,num_ctx:8192},messages:[{role:'system',content:prompt},{role:'user',content:input.slice(0,12000)}]}),signal:AbortSignal.timeout(20*60000)});
   if(!r.ok)throw new Error('ollama '+r.status);let out='';for(const line of(await r.text()).split('\n'))if(line.trim())out+=JSON.parse(line).message?.content||'';const j=JSON.parse(out||'{}');
   // Tools may come back as strings (older prompt / model shortcut) — normalise to objects.
-  const tools=(Array.isArray(j.tools)?j.tools:[]).map(t=>typeof t==='string'?{name:t}:t).filter(t=>t&&t.name).map(t=>({...t,name:String(t.name).trim().slice(0,100),url:String(t.url||'').trim(),what:String(t.what||'').trim().slice(0,300)}));
+  const all=(Array.isArray(j.tools)?j.tools:[]).map(t=>typeof t==='string'?{name:t}:t).filter(t=>t&&t.name).map(t=>({...t,name:String(t.name).trim().slice(0,100),url:String(t.url||'').trim(),what:String(t.what||'').trim().slice(0,300)}));
+  // Hard guard against invented tools: keep only those whose name or domain occurs in the source text.
+  const norm=s=>String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu,''),hay=norm(input),raw=input.toLowerCase();
+  const tools=all.filter(t=>{const n=norm(t.name),dom=domainOf(t.url);return(n.length>=3&&hay.includes(n))||(dom&&raw.includes(dom))});
+  const dropped=all.length-tools.length;if(dropped)log('tools not in source, dropped:',dropped,'of',all.length);
   return{...j,tools,category:CATEGORIES.includes(j.category)?j.category:'Other'}}
 
 // ---------- Resource Catalog ----------
@@ -131,7 +142,7 @@ async function handle(page,botId){const p=page.properties,id=page.id,title=plain
   const src=source(url),[meta,page2,m]=await Promise.all([metadata(url),pageText(url),media(url,dir)]);
   const transcript=m.wav?await transcribe(m.wav):'';const caption=meta.caption||page2.caption||'';const article=!transcript&&src==='Web'?page2.article||'':'';
   // Posts that are not Reels (/p/ = photo, carousel or mixed) and Threads posts may carry their text on images.
-  const sl=cfg.cobalt&&(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir):{text:'',count:0},slideText=sl.text;
+  const sl=(/instagram\.com\/p\//.test(url)||src==='Threads'||!m.wav)&&src!=='Web'?await slides(url,dir,meta.images||[]):{text:'',count:0},slideText=sl.text;
   // Every video, not only Reels: read what is shown on screen (lists, tool names and domains are often only there).
   const isVideo=!!m.wav||/instagram\.com\/(reels?|tv)\//.test(url)||src==='Threads'||src==='YouTube';
   const screen=isVideo&&src!=='Web'?await screenText(url,dir):'';
