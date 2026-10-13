@@ -68,6 +68,19 @@ async function media(url,dir){const errors=[],wav=join(dir,'audio.wav');for(cons
 
 // OCR output → lines that are mostly letters/digits (drops noise).
 const ocrLines=s=>s.split('\n').map(l=>l.trim()).filter(l=>l.length>2&&(l.match(/[\p{L}\p{N}]/gu)||[]).length/l.length>0.6);
+// A word Tesseract read with confidence and that looks like a word: not "eeeoeoe", not mixed Cyrillic+Latin ("ЗОВИ" read from "BOK").
+const isWord=w=>{const core=w.replace(/^[^\p{L}\p{N}@#\/]+|[^\p{L}\p{N}]+$/gu,'');if(/[^\p{L}\p{N}.\-_:\/'’]/u.test(core.slice(1)))return false;// symbols inside a word: "@ae@eco", "O©co"
+  const L=w.match(/\p{L}/gu)||[];if(!L.length)return /\d/.test(w)&&w.length>1;const t=w.replace(/[^\p{L}\p{N}]/gu,'');
+  if(/\p{Script=Cyrillic}/u.test(t)&&/\p{Script=Latin}/u.test(t))return false;if(t.length>=4&&new Set(t.toLowerCase()).size/t.length<0.4)return false;
+  if(/^[\p{L}]{4,}$/u.test(t)&&!/[aeiouyаеёиоуыэюя]/iu.test(t))return false;return true};
+// Image → text lines via Tesseract TSV: keep words with confidence ≥ MIN, keep a line only if most of it survived.
+const OCR_MIN=Number(process.env.OCR_MIN_CONF||75);
+async function ocr(img){const{stdout}=await run('tesseract',[img,'stdout','-l','rus+eng','tsv'],{timeout:120000});const lines=new Map();
+  for(const row of stdout.split('\n').slice(1)){const c=row.split('\t');if(c.length<12||c[0]!=='5')continue;const text=c[11].trim();if(!text)continue;
+    const key=c.slice(1,5).join('.');if(!lines.has(key))lines.set(key,[]);lines.get(key).push({text,conf:Number(c[10]),ok:Number(c[10])>=OCR_MIN&&isWord(text)})}
+  const out=[];for(const ws of lines.values()){const good=ws.filter(w=>w.ok);if(!good.length||good.length/ws.length<0.6)continue;
+    const line=good.map(w=>w.text).join(' ');if(good.length>=2||line.replace(/[^\p{L}\p{N}]/gu,'').length>=4)out.push(line)}
+  return ocrLines(out.join('\n'))}
 // Photos and carousel slides → text with Tesseract (rus+eng). Cobalt returns every slide as a "picker" item;
 // when it gives at most one (login wall, tracking params), fall back to the slide images yt-dlp listed (needs cookies).
 async function slides(url,dir,images=[]){let urls=[];try{if(cfg.cobalt){const clean=url.replace(/\?.*$/,'');// Cobalt is picky about ?img_index=&stkn= params
@@ -75,8 +88,7 @@ async function slides(url,dir,images=[]){let urls=[];try{if(cfg.cobalt){const cl
     urls=d.status==='picker'?d.picker.filter(p=>p.type==='photo').map(p=>p.url):(d.status==='tunnel'||d.status==='redirect')&&/\.(jpe?g|png|webp|heic)$/i.test(d.filename||'')?[d.url]:[];
     log('cobalt slides:',d.status,d.error?.code||'',urls.length)}}catch(e){log('cobalt slides skipped:',e.message.slice(0,120))}
   if(urls.length<=1&&images.length>urls.length){urls=images;log('slides from yt-dlp thumbnails:',images.length)}
-  const out=[];for(const[i,u]of urls.slice(0,20).entries()){try{const img=await download(u,join(dir,`slide-${i}`));const{stdout}=await run('tesseract',[img,'stdout','-l','rus+eng'],{timeout:120000});
-    const t=ocrLines(stdout).join('\n');if(t)out.push(`Slide ${i+1}:\n${t}`)}catch(e){log('slide',i+1,'failed:',e.message.split('\n')[0].slice(0,120))}}
+  const out=[];for(const[i,u]of urls.slice(0,20).entries()){try{const img=await download(u,join(dir,`slide-${i}`));const t=(await ocr(img)).join('\n');if(t)out.push(`Slide ${i+1}:\n${t}`)}catch(e){log('slide',i+1,'failed:',e.message.split('\n')[0].slice(0,120))}}
   log('slides',urls.length,'with text',out.length);return{text:out.join('\n\n'),count:urls.length}}
 
 // Videos often show their list, tool names and domains on screen without saying them. Sample up to 40 frames:
@@ -88,8 +100,8 @@ async function screenText(url,dir){try{await run('yt-dlp',['-f','bv*[height<=108
   if(dur>150)await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf',`fps=${40/dur},scale=1080:-2`,'-frames:v','40',join(dir,'tick-%03d.png')],{timeout:10*60000});
   else await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf',"select='eq(n\\,0)+gt(scene\\,0.2)',scale=1080:-2",'-fps_mode','vfr','-frames:v','40',join(dir,'scene-%03d.png')],{timeout:5*60000});
   if((await frames()).length<4)await run('ffmpeg',['-y','-v','error','-i',join(dir,video),'-vf','fps=1/2,scale=1080:-2','-frames:v','40',join(dir,'tick-%03d.png')],{timeout:5*60000});
-  const seen=new Set(),out=[],list=await frames();for(const f of list){const{stdout}=await run('tesseract',[join(dir,f),'stdout','-l','rus+eng'],{timeout:120000}).catch(()=>({stdout:''}));
-    for(const l of ocrLines(stdout)){const k=l.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');if(k.length>2&&!seen.has(k)){seen.add(k);out.push(l)}}}
+  const seen=new Set(),out=[],list=await frames();for(const f of list){const got=await ocr(join(dir,f)).catch(()=>[]);
+    for(const l of got){const k=l.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');if(k.length>2&&!seen.has(k)){seen.add(k);out.push(l)}}}
   log('screen frames',list.length,'lines',out.length);return out.join('\n')}catch(e){log('screen text skipped:',(e.stderr||e.message).split('\n').find(l=>l.startsWith('ERROR'))?.slice(0,160)||e.message.split('\n')[0].slice(0,120));return''}}
 
 // ---------- Transcript + digest ----------
